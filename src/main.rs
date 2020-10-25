@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
@@ -103,12 +103,20 @@ impl ContentAddressable for Object {
 }
 
 #[derive(Clone, Debug)]
-struct Blob(Vec<u8>);
+struct Blob {
+    bytes: Vec<u8>,
+    is_executable: bool,
+}
 
 impl ContentAddressable for Blob {
     fn object_id(&self) -> ObjectId {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"blob:").update(&self.0);
+        if self.is_executable {
+            hasher.update(b"exec:");
+        } else {
+            hasher.update(b"blob:");
+        }
+        hasher.update(&self.bytes);
         ObjectId(hasher.finalize())
     }
 }
@@ -116,7 +124,7 @@ impl ContentAddressable for Blob {
 #[derive(Clone, Debug, Hash, Deserialize, Serialize)]
 enum Entry {
     Tree { id: ObjectId },
-    Blob { id: ObjectId, is_executable: bool },
+    Blob { id: ObjectId },
     Symlink { target: PathBuf },
 }
 
@@ -289,32 +297,22 @@ impl FsStore {
 
                     self.write_tree(&entry_path, subtree)?;
                 }
-                Entry::Blob { id, is_executable } => {
-                    let blob = self
-                        .get_object(&id)?
-                        .and_then(|o| o.into_blob().ok())
-                        .ok_or(anyhow!("blob object {} not found", id))?;
-
-                    if *is_executable {
-                        let mut file = std::fs::File::create(&entry_path)?;
-                        file.write_all(&blob.0)?;
-                        file.flush()?;
-                        let perms = std::fs::Permissions::from_mode(0o544);
-                        file.set_permissions(perms)?;
-                        filetime::set_file_mtime(&entry_path, FileTime::zero())?;
-                        file.sync_all()?;
-                        println!("=> copied blob: {}", entry_path.display());
-                    } else {
-                        let text = id.0.to_hex();
-                        let mut src = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
-                        src.set_extension("blob");
-                        std::fs::hard_link(&src, &entry_path)?;
-                        println!(
-                            "=> hard-linked blob: {} -> {}",
-                            src.display(),
-                            entry_path.display()
-                        );
-                    }
+                Entry::Blob { id } => {
+                    let text = id.0.to_hex();
+                    let mut src = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
+                    src.set_extension("blob");
+                    std::fs::hard_link(&src, &entry_path).map_err(|e| {
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            anyhow!("blob object {} not found", id)
+                        } else {
+                            e.into()
+                        }
+                    })?;
+                    println!(
+                        "=> hard-linked blob: {} -> {}",
+                        src.display(),
+                        entry_path.display()
+                    );
                 }
                 Entry::Symlink { target } => {
                     std::os::unix::fs::symlink(&target, &entry_path)?;
@@ -350,20 +348,21 @@ impl Store for FsStore {
         match o {
             Object::Blob(blob) => {
                 path.set_extension("blob");
-                write_object(&path, |mut file| {
-                    file.write_all(&blob.0[..]).map_err(From::from)
+                let perms = if blob.is_executable { 0o544 } else { 0o444 };
+                write_object(&path, perms, |mut file| {
+                    file.write_all(&blob.bytes[..]).map_err(From::from)
                 })?;
             }
             Object::Tree(tree) => {
                 path.set_extension("tree");
-                write_object(&path, |mut file| {
+                write_object(&path, 0o444, |mut file| {
                     serde_json::to_writer(&mut file, &tree).map_err(From::from)
                 })?;
             }
             Object::Package(pkg) => {
                 self.checkout(&pkg)?;
                 path.set_extension("pkg");
-                write_object(&path, |mut file| {
+                write_object(&path, 0o444, |mut file| {
                     serde_json::to_writer(&mut file, &pkg).map_err(From::from)
                 })?;
             }
@@ -412,7 +411,11 @@ fn open_object(path: &Path) -> anyhow::Result<Object> {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("blob") => {
             let bytes = std::fs::read(path)?;
-            Ok(Object::Blob(Blob(bytes)))
+            let is_executable = std::fs::metadata(path)?.mode() & 0o100 != 0;
+            Ok(Object::Blob(Blob {
+                bytes,
+                is_executable,
+            }))
         }
         Some("tree") => {
             let reader = std::fs::File::open(path)?;
@@ -429,7 +432,7 @@ fn open_object(path: &Path) -> anyhow::Result<Object> {
     }
 }
 
-fn write_object<F>(obj_path: &Path, ser_fn: F) -> anyhow::Result<()>
+fn write_object<F>(obj_path: &Path, perms: u32, ser_fn: F) -> anyhow::Result<()>
 where
     F: Fn(&std::fs::File) -> anyhow::Result<()>,
 {
@@ -438,7 +441,7 @@ where
         ser_fn(&file.as_file())?;
         file.flush()?;
 
-        let perms = std::fs::Permissions::from_mode(0o444);
+        let perms = std::fs::Permissions::from_mode(perms);
         file.as_file_mut().set_permissions(perms)?;
         filetime::set_file_mtime(file.path(), FileTime::zero())?;
 
@@ -453,38 +456,29 @@ fn main() -> anyhow::Result<()> {
     // let mut store = InMemoryStore::default();
     let mut store = FsStore::open("store")?;
 
-    let txt_id = store.insert_object(Object::Blob(Blob(b"foobarbaz".to_vec())))?;
-    let rs_id = store.insert_object(Object::Blob(Blob(b"fn main() {}".to_vec())))?;
-    let sh_id = store.insert_object(Object::Blob(Blob(b"echo \"hi\"".to_vec())))?;
+    let txt_id = store.insert_object(Object::Blob(Blob {
+        bytes: b"foobarbaz".to_vec(),
+        is_executable: false,
+    }))?;
+    let rs_id = store.insert_object(Object::Blob(Blob {
+        bytes: b"fn main() {}".to_vec(),
+        is_executable: false,
+    }))?;
+    let sh_id = store.insert_object(Object::Blob(Blob {
+        bytes: b"echo \"hi\"".to_vec(),
+        is_executable: true,
+    }))?;
 
     let sub_tree_id = store.insert_object(Object::Tree({
         let mut entries = BTreeMap::new();
-        entries.insert(
-            "main.rs".into(),
-            Entry::Blob {
-                id: rs_id,
-                is_executable: false,
-            },
-        );
+        entries.insert("main.rs".into(), Entry::Blob { id: rs_id });
         Tree { entries }
     }))?;
 
     let main_tree_id = store.insert_object(Object::Tree({
         let mut entries = BTreeMap::new();
-        entries.insert(
-            "foo.txt".into(),
-            Entry::Blob {
-                id: txt_id,
-                is_executable: false,
-            },
-        );
-        entries.insert(
-            "bar.sh".into(),
-            Entry::Blob {
-                id: sh_id,
-                is_executable: true,
-            },
-        );
+        entries.insert("foo.txt".into(), Entry::Blob { id: txt_id });
+        entries.insert("bar.sh".into(), Entry::Blob { id: sh_id });
         entries.insert(
             "baz.rs".into(),
             Entry::Symlink {
@@ -497,13 +491,7 @@ fn main() -> anyhow::Result<()> {
 
     let similar_tree_id = store.insert_object(Object::Tree({
         let mut entries = BTreeMap::new();
-        entries.insert(
-            "main.rs".into(),
-            Entry::Blob {
-                id: rs_id,
-                is_executable: false,
-            },
-        );
+        entries.insert("main.rs".into(), Entry::Blob { id: rs_id });
         Tree { entries }
     }))?;
 
