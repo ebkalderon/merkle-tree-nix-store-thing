@@ -247,9 +247,10 @@ type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, ObjectKind)
 
 trait Store {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId>;
-    fn get_object(&self, id: &ObjectId) -> anyhow::Result<Option<Object>>;
+    fn get_object(&self, id: &ObjectId, kind: Option<ObjectKind>)
+        -> anyhow::Result<Option<Object>>;
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>>;
-    fn contains_object(&self, id: &ObjectId) -> anyhow::Result<bool>;
+    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool>;
 }
 
 #[derive(Debug, Default)]
@@ -264,7 +265,7 @@ impl Store for InMemoryStore {
         Ok(id)
     }
 
-    fn get_object(&self, id: &ObjectId) -> anyhow::Result<Option<Object>> {
+    fn get_object(&self, id: &ObjectId, _: Option<ObjectKind>) -> anyhow::Result<Option<Object>> {
         Ok(self.objects.get(id).cloned())
     }
 
@@ -274,7 +275,7 @@ impl Store for InMemoryStore {
         ))
     }
 
-    fn contains_object(&self, id: &ObjectId) -> anyhow::Result<bool> {
+    fn contains_object(&self, id: &ObjectId, _: Option<ObjectKind>) -> anyhow::Result<bool> {
         Ok(self.objects.contains_key(id))
     }
 }
@@ -306,7 +307,11 @@ impl FsStore {
             let missing_refs: BTreeSet<_> = pkg
                 .references
                 .iter()
-                .filter_map(|id| self.get_object(&id).ok().flatten())
+                .filter_map(|id| {
+                    self.get_object(id, Some(ObjectKind::Package))
+                        .ok()
+                        .flatten()
+                })
                 .filter_map(|obj| obj.into_package().ok().map(|pkg| pkg.id()))
                 .filter(|pkg_id| !packages_dir.join(pkg_id.to_string()).exists())
                 .collect();
@@ -315,7 +320,7 @@ impl FsStore {
                 std::fs::create_dir_all(&packages_dir)?;
 
                 let tree = self
-                    .get_object(&pkg.tree)?
+                    .get_object(&pkg.tree, Some(ObjectKind::Tree))?
                     .and_then(|o| o.into_tree().ok())
                     .ok_or(anyhow!("root tree object {} not found", pkg.tree))?;
 
@@ -345,7 +350,7 @@ impl FsStore {
             match entry {
                 Entry::Tree { id } => {
                     let subtree = self
-                        .get_object(&id)?
+                        .get_object(id, Some(ObjectKind::Tree))?
                         .and_then(|o| o.into_tree().ok())
                         .ok_or(anyhow!("tree object {} not found", id))?;
 
@@ -390,15 +395,35 @@ impl FsStore {
 
 impl Store for FsStore {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
-        let id = o.object_id();
-        let text = id.0.to_hex();
+        fn write_object<F>(p: &Path, perms: u32, ser_fn: F) -> anyhow::Result<()>
+        where
+            F: Fn(&std::fs::File) -> anyhow::Result<()>,
+        {
+            if !p.exists() {
+                let mut file = tempfile::NamedTempFile::new()?;
+                ser_fn(&file.as_file())?;
+                file.flush()?;
 
-        let base_path = self.base.join("objects").join(&text[0..2]);
-        if !base_path.exists() {
-            std::fs::create_dir_all(&base_path)?;
+                let perms = std::fs::Permissions::from_mode(perms);
+                file.as_file_mut().set_permissions(perms)?;
+                filetime::set_file_mtime(file.path(), FileTime::zero())?;
+
+                file.as_file_mut().sync_all()?;
+                file.persist(p)?;
+            }
+
+            Ok(())
         }
 
-        let mut path = base_path.join(&text[2..]);
+        let id = o.object_id();
+        let text = id.0.to_hex();
+        let mut path = self.base.join("objects").join(&text[0..2]);
+
+        if !path.exists() {
+            std::fs::create_dir_all(&path)?;
+        }
+
+        path.push(&text[2..]);
         path.set_extension(o.kind().as_str());
 
         match o {
@@ -424,13 +449,47 @@ impl Store for FsStore {
         Ok(id)
     }
 
-    fn get_object(&self, id: &ObjectId) -> anyhow::Result<Option<Object>> {
+    fn get_object(
+        &self,
+        id: &ObjectId,
+        kind: Option<ObjectKind>,
+    ) -> anyhow::Result<Option<Object>> {
         let text = id.0.to_hex();
-        let path = std::fs::read_dir(self.base.join("objects").join(&text[0..2]))?
-            .filter_map(|r| r.ok().map(|entry| entry.path()))
-            .find(|entry| entry.file_stem().filter(|&p| p == &text[2..]).is_some());
+        let mut path = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
 
-        path.map(|p| open_object(&p)).transpose()
+        let exists = if kind.is_some() {
+            kind.filter(|k| {
+                path.set_extension(k.as_str());
+                path.exists()
+            })
+        } else {
+            ObjectKind::iter().find(|k| {
+                path.set_extension(k.as_str());
+                path.exists()
+            })
+        };
+
+        match exists {
+            Some(ObjectKind::Blob) => {
+                let bytes = std::fs::read(&path)?;
+                let is_executable = std::fs::metadata(path)?.mode() & 0o100 != 0;
+                Ok(Some(Object::Blob(Blob {
+                    bytes,
+                    is_executable,
+                })))
+            }
+            Some(ObjectKind::Tree) => {
+                let reader = std::fs::File::open(path)?;
+                let tree = serde_json::from_reader(reader)?;
+                Ok(Some(Object::Tree(tree)))
+            }
+            Some(ObjectKind::Package) => {
+                let reader = std::fs::File::open(path)?;
+                let package = serde_json::from_reader(reader)?;
+                Ok(Some(Object::Package(package)))
+            }
+            None => Ok(None),
+        }
     }
 
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>> {
@@ -443,7 +502,7 @@ impl Store for FsStore {
         let objects = Box::new(entries.map(|entry| {
             let p = entry.path();
             let parts = p.parent().and_then(|s| s.file_stem()).zip(p.file_stem());
-            let id_result = parts
+            let id_res = parts
                 .map(|(prefix, rest)| prefix.to_str().into_iter().chain(rest.to_str()).collect())
                 .ok_or(anyhow!("could not assemble object hash from path"))
                 .and_then(|hash: String| {
@@ -452,80 +511,36 @@ impl Store for FsStore {
                     Ok(ObjectId(buf.into()))
                 });
 
-            let kind_result = p
+            let kind_res = p
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .ok_or(anyhow!("object file extension is not valid UTF-8"))
                 .and_then(|ext| ext.parse());
 
-            id_result.and_then(|id| kind_result.map(|kind| (id, kind)))
+            id_res.and_then(|id| kind_res.map(|kind| (id, kind)))
         }));
 
         Ok(objects)
     }
 
-    fn contains_object(&self, id: &ObjectId) -> anyhow::Result<bool> {
+    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
         let text = id.0.to_hex();
         let mut path = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
 
-        for kind in ObjectKind::iter() {
-            path.set_extension(kind.as_str());
-            if path.exists() {
-                return Ok(true);
+        if let Some(k) = kind {
+            path.set_extension(k.as_str());
+            Ok(path.exists())
+        } else {
+            for kind in ObjectKind::iter() {
+                path.set_extension(kind.as_str());
+                if path.exists() {
+                    return Ok(true);
+                }
             }
-        }
 
-        Ok(false)
-    }
-}
-
-fn open_object(path: &Path) -> anyhow::Result<Object> {
-    let kind = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .ok_or(anyhow!("object file is missing extension"))?
-        .parse()?;
-
-    match kind {
-        ObjectKind::Blob => {
-            let bytes = std::fs::read(path)?;
-            let is_executable = std::fs::metadata(path)?.mode() & 0o100 != 0;
-            Ok(Object::Blob(Blob {
-                bytes,
-                is_executable,
-            }))
-        }
-        ObjectKind::Tree => {
-            let reader = std::fs::File::open(path)?;
-            let tree = serde_json::from_reader(reader)?;
-            Ok(Object::Tree(tree))
-        }
-        ObjectKind::Package => {
-            let reader = std::fs::File::open(path)?;
-            let package = serde_json::from_reader(reader)?;
-            Ok(Object::Package(package))
+            Ok(false)
         }
     }
-}
-
-fn write_object<F>(obj_path: &Path, perms: u32, ser_fn: F) -> anyhow::Result<()>
-where
-    F: Fn(&std::fs::File) -> anyhow::Result<()>,
-{
-    if !obj_path.exists() {
-        let mut file = tempfile::NamedTempFile::new()?;
-        ser_fn(&file.as_file())?;
-        file.flush()?;
-
-        let perms = std::fs::Permissions::from_mode(perms);
-        file.as_file_mut().set_permissions(perms)?;
-        filetime::set_file_mtime(file.path(), FileTime::zero())?;
-
-        file.as_file_mut().sync_all()?;
-        file.persist(obj_path)?;
-    }
-
-    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -592,14 +607,14 @@ fn main() -> anyhow::Result<()> {
     println!(
         "program 'foo': {:?}",
         store
-            .get_object(&pkg_id)?
+            .get_object(&pkg_id, Some(ObjectKind::Package))?
             .and_then(|o| o.into_package().ok())
             .unwrap()
     );
     println!(
         "program 'bar': {:?}",
         store
-            .get_object(&pkg_id2)?
+            .get_object(&pkg_id2, Some(ObjectKind::Package))?
             .and_then(|o| o.into_package().ok())
             .unwrap()
     );
