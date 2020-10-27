@@ -549,7 +549,7 @@ impl Store for FsStore {
 
 fn main() -> anyhow::Result<()> {
     // let mut store = InMemoryStore::default();
-    let mut store = FsStore::open("store")?;
+    let mut store = FsStore::open("./store")?;
 
     let txt_id = store.insert_object(Object::Blob(Blob {
         bytes: b"foobarbaz".to_vec(),
