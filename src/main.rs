@@ -4,6 +4,7 @@ use std::fmt::{self, Debug, Display, Formatter};
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::{anyhow, Context};
 use blake3::Hash;
@@ -62,6 +63,43 @@ impl Serialize for ObjectId {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ObjectKind {
+    Blob,
+    Tree,
+    Package,
+}
+
+impl ObjectKind {
+    fn iter() -> impl Iterator<Item = Self> {
+        use std::iter::once;
+        once(ObjectKind::Blob)
+            .chain(once(ObjectKind::Tree))
+            .chain(once(ObjectKind::Package))
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            ObjectKind::Blob => "blob",
+            ObjectKind::Tree => "tree",
+            ObjectKind::Package => "pkg",
+        }
+    }
+}
+
+impl FromStr for ObjectKind {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "blob" => Ok(ObjectKind::Blob),
+            "tree" => Ok(ObjectKind::Tree),
+            "pkg" => Ok(ObjectKind::Package),
+            ext => Err(anyhow!("unrecognized object file extension: {}", ext)),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Object {
     Blob(Blob),
@@ -70,6 +108,14 @@ enum Object {
 }
 
 impl Object {
+    fn kind(&self) -> ObjectKind {
+        match *self {
+            Object::Blob(_) => ObjectKind::Blob,
+            Object::Tree(_) => ObjectKind::Tree,
+            Object::Package(_) => ObjectKind::Package,
+        }
+    }
+
     fn into_blob(self) -> Result<Blob, Self> {
         match self {
             Object::Blob(b) => Ok(b),
@@ -197,7 +243,7 @@ impl ContentAddressable for Package {
 
 // Store
 
-type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, Object)>> + 'a>;
+type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, ObjectKind)>> + 'a>;
 
 trait Store {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId>;
@@ -223,7 +269,9 @@ impl Store for InMemoryStore {
     }
 
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>> {
-        Ok(Box::new(self.objects.clone().into_iter().map(Ok)))
+        Ok(Box::new(
+            self.objects.iter().map(|(&k, v)| (k, v.kind())).map(Ok),
+        ))
     }
 
     fn contains_object(&self, id: &ObjectId) -> anyhow::Result<bool> {
@@ -351,23 +399,22 @@ impl Store for FsStore {
         }
 
         let mut path = base_path.join(&text[2..]);
+        path.set_extension(o.kind().as_str());
+
         match o {
             Object::Blob(blob) => {
-                path.set_extension("blob");
                 let perms = if blob.is_executable { 0o544 } else { 0o444 };
                 write_object(&path, perms, |mut file| {
                     file.write_all(&blob.bytes[..]).map_err(From::from)
                 })?;
             }
             Object::Tree(tree) => {
-                path.set_extension("tree");
                 write_object(&path, 0o444, |mut file| {
                     serde_json::to_writer(&mut file, &tree).map_err(From::from)
                 })?;
             }
             Object::Package(pkg) => {
                 self.checkout(&pkg)?;
-                path.set_extension("pkg");
                 write_object(&path, 0o444, |mut file| {
                     serde_json::to_writer(&mut file, &pkg).map_err(From::from)
                 })?;
@@ -389,7 +436,6 @@ impl Store for FsStore {
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>> {
         let entries = std::fs::read_dir(self.base.join("objects"))?
             .filter_map(|r| r.ok())
-            .filter(|entry| entry.file_type().ok().filter(|ty| ty.is_dir()).is_some())
             .filter_map(|entry| entry.path().read_dir().ok())
             .flat_map(|iter| iter.filter_map(|r| r.ok()))
             .filter(|entry| entry.file_type().ok().filter(|ty| ty.is_file()).is_some());
@@ -397,8 +443,8 @@ impl Store for FsStore {
         let objects = Box::new(entries.map(|entry| {
             let p = entry.path();
             let parts = p.parent().and_then(|s| s.file_stem()).zip(p.file_stem());
-            let id = parts
-                .map(|(x, y)| x.to_str().into_iter().chain(y.to_str()).collect())
+            let id_result = parts
+                .map(|(prefix, rest)| prefix.to_str().into_iter().chain(rest.to_str()).collect())
                 .ok_or(anyhow!("could not assemble object hash from path"))
                 .and_then(|hash: String| {
                     let mut buf = [0u8; blake3::OUT_LEN];
@@ -406,7 +452,13 @@ impl Store for FsStore {
                     Ok(ObjectId(buf.into()))
                 });
 
-            id.and_then(|id| open_object(&entry.path()).map(|obj| (id, obj)))
+            let kind_result = p
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .ok_or(anyhow!("object file extension is not valid UTF-8"))
+                .and_then(|ext| ext.parse());
+
+            id_result.and_then(|id| kind_result.map(|kind| (id, kind)))
         }));
 
         Ok(objects)
@@ -416,8 +468,8 @@ impl Store for FsStore {
         let text = id.0.to_hex();
         let mut path = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
 
-        for ext in &["blob", "tree", "pkg"] {
-            path.set_extension(ext);
+        for kind in ObjectKind::iter() {
+            path.set_extension(kind.as_str());
             if path.exists() {
                 return Ok(true);
             }
@@ -428,8 +480,14 @@ impl Store for FsStore {
 }
 
 fn open_object(path: &Path) -> anyhow::Result<Object> {
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("blob") => {
+    let kind = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .ok_or(anyhow!("object file is missing extension"))?
+        .parse()?;
+
+    match kind {
+        ObjectKind::Blob => {
             let bytes = std::fs::read(path)?;
             let is_executable = std::fs::metadata(path)?.mode() & 0o100 != 0;
             Ok(Object::Blob(Blob {
@@ -437,18 +495,16 @@ fn open_object(path: &Path) -> anyhow::Result<Object> {
                 is_executable,
             }))
         }
-        Some("tree") => {
+        ObjectKind::Tree => {
             let reader = std::fs::File::open(path)?;
             let tree = serde_json::from_reader(reader)?;
             Ok(Object::Tree(tree))
         }
-        Some("pkg") => {
+        ObjectKind::Package => {
             let reader = std::fs::File::open(path)?;
             let package = serde_json::from_reader(reader)?;
             Ok(Object::Package(package))
         }
-        Some(ext) => Err(anyhow!("unrecognized extension: {}", ext)),
-        None => Err(anyhow!("object file is missing extension")),
     }
 }
 
