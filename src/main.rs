@@ -247,8 +247,7 @@ type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, ObjectKind)
 
 trait Store {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId>;
-    fn get_object(&self, id: &ObjectId, kind: Option<ObjectKind>)
-        -> anyhow::Result<Option<Object>>;
+    fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Option<Object>>;
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>>;
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool>;
 }
@@ -265,8 +264,8 @@ impl Store for InMemoryStore {
         Ok(id)
     }
 
-    fn get_object(&self, id: &ObjectId, _: Option<ObjectKind>) -> anyhow::Result<Option<Object>> {
-        Ok(self.objects.get(id).cloned())
+    fn get_object(&self, id: ObjectId, _: Option<ObjectKind>) -> anyhow::Result<Option<Object>> {
+        Ok(self.objects.get(&id).cloned())
     }
 
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>> {
@@ -307,7 +306,7 @@ impl FsStore {
             let missing_refs: BTreeSet<_> = pkg
                 .references
                 .iter()
-                .filter_map(|id| {
+                .filter_map(|&id| {
                     self.get_object(id, Some(ObjectKind::Package))
                         .ok()
                         .flatten()
@@ -320,7 +319,7 @@ impl FsStore {
                 std::fs::create_dir_all(&packages_dir)?;
 
                 let tree = self
-                    .get_object(&pkg.tree, Some(ObjectKind::Tree))?
+                    .get_object(pkg.tree, Some(ObjectKind::Tree))?
                     .and_then(|o| o.into_tree().ok())
                     .ok_or(anyhow!("root tree object {} not found", pkg.tree))?;
 
@@ -350,7 +349,7 @@ impl FsStore {
             match entry {
                 Entry::Tree { id } => {
                     let subtree = self
-                        .get_object(id, Some(ObjectKind::Tree))?
+                        .get_object(*id, Some(ObjectKind::Tree))?
                         .and_then(|o| o.into_tree().ok())
                         .ok_or(anyhow!("tree object {} not found", id))?;
 
@@ -449,11 +448,7 @@ impl Store for FsStore {
         Ok(id)
     }
 
-    fn get_object(
-        &self,
-        id: &ObjectId,
-        kind: Option<ObjectKind>,
-    ) -> anyhow::Result<Option<Object>> {
+    fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Option<Object>> {
         let text = id.0.to_hex();
         let mut path = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
 
@@ -607,14 +602,14 @@ fn main() -> anyhow::Result<()> {
     println!(
         "program 'foo': {:?}",
         store
-            .get_object(&pkg_id, Some(ObjectKind::Package))?
+            .get_object(pkg_id, Some(ObjectKind::Package))?
             .and_then(|o| o.into_package().ok())
             .unwrap()
     );
     println!(
         "program 'bar': {:?}",
         store
-            .get_object(&pkg_id2, Some(ObjectKind::Package))?
+            .get_object(pkg_id2, Some(ObjectKind::Package))?
             .and_then(|o| o.into_package().ok())
             .unwrap()
     );
