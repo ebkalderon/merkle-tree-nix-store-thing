@@ -250,6 +250,21 @@ trait Store {
     fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Option<Object>>;
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>>;
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool>;
+
+    fn get_blob(&self, id: ObjectId) -> anyhow::Result<Option<Blob>> {
+        self.get_object(id, Some(ObjectKind::Blob))
+            .map(|opt| opt.and_then(|o| o.into_blob().ok()))
+    }
+
+    fn get_tree(&self, id: ObjectId) -> anyhow::Result<Option<Tree>> {
+        self.get_object(id, Some(ObjectKind::Tree))
+            .map(|opt| opt.and_then(|o| o.into_tree().ok()))
+    }
+
+    fn get_package(&self, id: ObjectId) -> anyhow::Result<Option<Package>> {
+        self.get_object(id, Some(ObjectKind::Package))
+            .map(|opt| opt.and_then(|o| o.into_package().ok()))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -306,21 +321,16 @@ impl FsStore {
             let missing_refs: BTreeSet<_> = pkg
                 .references
                 .iter()
-                .filter_map(|&id| {
-                    self.get_object(id, Some(ObjectKind::Package))
-                        .ok()
-                        .flatten()
-                })
-                .filter_map(|obj| obj.into_package().ok().map(|pkg| pkg.id()))
-                .filter(|pkg_id| !packages_dir.join(pkg_id.to_string()).exists())
+                .filter_map(|&id| self.get_package(id).ok().flatten())
+                .map(|pkg| pkg.id())
+                .filter(|id| !packages_dir.join(id.to_string()).exists())
                 .collect();
 
             if missing_refs.is_empty() {
                 std::fs::create_dir_all(&packages_dir)?;
 
                 let tree = self
-                    .get_object(pkg.tree, Some(ObjectKind::Tree))?
-                    .and_then(|o| o.into_tree().ok())
+                    .get_tree(pkg.tree)?
                     .ok_or(anyhow!("root tree object {} not found", pkg.tree))?;
 
                 let temp_dir = tempfile::tempdir()?;
@@ -349,8 +359,7 @@ impl FsStore {
             match entry {
                 Entry::Tree { id } => {
                     let subtree = self
-                        .get_object(*id, Some(ObjectKind::Tree))?
-                        .and_then(|o| o.into_tree().ok())
+                        .get_tree(*id)?
                         .ok_or(anyhow!("tree object {} not found", id))?;
 
                     self.write_tree(&entry_path, subtree)?;
@@ -599,20 +608,8 @@ fn main() -> anyhow::Result<()> {
         }
     }))?;
 
-    println!(
-        "program 'foo': {:?}",
-        store
-            .get_object(pkg_id, Some(ObjectKind::Package))?
-            .and_then(|o| o.into_package().ok())
-            .unwrap()
-    );
-    println!(
-        "program 'bar': {:?}",
-        store
-            .get_object(pkg_id2, Some(ObjectKind::Package))?
-            .and_then(|o| o.into_package().ok())
-            .unwrap()
-    );
+    println!("program 'foo': {:?}", store.get_package(pkg_id)?.unwrap());
+    println!("program 'bar': {:?}", store.get_package(pkg_id2)?.unwrap());
 
     Ok(())
 }
