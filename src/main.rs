@@ -122,6 +122,7 @@ impl ContentAddressable for Blob {
 }
 
 #[derive(Clone, Debug, Hash, Deserialize, Serialize)]
+#[serde(tag = "type")]
 enum Entry {
     Tree { id: ObjectId },
     Blob { id: ObjectId },
