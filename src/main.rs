@@ -203,6 +203,7 @@ trait Store {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId>;
     fn get_object(&self, id: &ObjectId) -> anyhow::Result<Option<Object>>;
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>>;
+    fn contains_object(&self, id: &ObjectId) -> anyhow::Result<bool>;
 }
 
 #[derive(Debug, Default)]
@@ -223,6 +224,10 @@ impl Store for InMemoryStore {
 
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>> {
         Ok(Box::new(self.objects.clone().into_iter().map(Ok)))
+    }
+
+    fn contains_object(&self, id: &ObjectId) -> anyhow::Result<bool> {
+        Ok(self.objects.contains_key(id))
     }
 }
 
@@ -405,6 +410,20 @@ impl Store for FsStore {
         }));
 
         Ok(objects)
+    }
+
+    fn contains_object(&self, id: &ObjectId) -> anyhow::Result<bool> {
+        let text = id.0.to_hex();
+        let mut path = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
+
+        for ext in &["blob", "tree", "pkg"] {
+            path.set_extension(ext);
+            if path.exists() {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 }
 
