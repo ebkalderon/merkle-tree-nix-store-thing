@@ -137,7 +137,7 @@ impl FromStr for ObjectKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum Object {
     Blob(Blob),
     Tree(Tree),
@@ -185,7 +185,7 @@ impl ContentAddressable for Object {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Blob {
     bytes: Vec<u8>,
     is_executable: bool,
@@ -427,22 +427,73 @@ where
     ClosureBuilder::new(&items, get_children).compute()
 }
 
+#[derive(Clone, Debug)]
+enum InMemory {
+    Blob { bytes: Vec<u8>, is_executable: bool },
+    Tree(Tree),
+    Package(Package),
+}
+
+impl InMemory {
+    fn from_object(o: Object) -> anyhow::Result<Self> {
+        match o {
+            Object::Blob(b) => Ok(InMemory::Blob {
+                bytes: b.bytes,
+                is_executable: b.is_executable,
+            }),
+            Object::Tree(t) => Ok(InMemory::Tree(t)),
+            Object::Package(p) => Ok(InMemory::Package(p)),
+        }
+    }
+
+    fn kind(&self) -> ObjectKind {
+        match *self {
+            InMemory::Blob { .. } => ObjectKind::Blob,
+            InMemory::Tree(_) => ObjectKind::Tree,
+            InMemory::Package(_) => ObjectKind::Package,
+        }
+    }
+}
+
+impl From<InMemory> for Object {
+    fn from(o: InMemory) -> Self {
+        match o {
+            InMemory::Blob {
+                bytes,
+                is_executable,
+            } => Object::Blob(Blob {
+                bytes,
+                is_executable,
+            }),
+            InMemory::Tree(t) => Object::Tree(t),
+            InMemory::Package(p) => Self::Package(p),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct InMemoryStore {
-    objects: BTreeMap<ObjectId, Object>,
+    objects: BTreeMap<ObjectId, InMemory>,
 }
 
 impl Store for InMemoryStore {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
+        use std::collections::btree_map::Entry;
         let id = o.object_id();
-        self.objects.entry(id).or_insert(o);
-        Ok(id)
+        match self.objects.entry(id) {
+            Entry::Occupied(_) => Ok(id),
+            Entry::Vacant(e) => {
+                e.insert(InMemory::from_object(o)?);
+                Ok(id)
+            }
+        }
     }
 
     fn get_object(&self, id: ObjectId, _: Option<ObjectKind>) -> anyhow::Result<Object> {
         self.objects
             .get(&id)
             .cloned()
+            .map(Object::from)
             .ok_or(anyhow!("object {} not found", id))
     }
 
