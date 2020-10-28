@@ -7,10 +7,6 @@ use std::str::FromStr;
 use anyhow::Context;
 use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 
-pub trait ContentAddressable {
-    fn object_id(&self) -> ObjectId;
-}
-
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct ObjectId(blake3::Hash);
 

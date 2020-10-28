@@ -1,3 +1,5 @@
+pub use self::id::{HashWriter, Hasher, ObjectId};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::Hash;
@@ -8,8 +10,13 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
-use crate::id::{self, ContentAddressable, HashWriter, ObjectId};
 use crate::util::PagedBuffer;
+
+mod id;
+
+pub trait ContentAddressable {
+    fn object_id(&self) -> ObjectId;
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub enum ObjectKind {

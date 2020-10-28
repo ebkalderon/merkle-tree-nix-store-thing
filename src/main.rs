@@ -8,10 +8,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context};
 use filetime::FileTime;
 
-use self::id::{ContentAddressable, ObjectId};
-use self::object::{Blob, Entry, Object, ObjectKind, Package, Tree};
+use self::object::{Blob, ContentAddressable, Entry, Object, ObjectId, ObjectKind, Package, Tree};
 
-mod id;
 mod object;
 mod util;
 
