@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::Hash;
@@ -9,104 +8,15 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, Context};
 use filetime::FileTime;
-use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
+use self::id::{ContentAddressable, HashWriter, ObjectId};
 use self::util::PagedBuffer;
 
+mod id;
 mod util;
 
 // Filesystem objects
-
-trait ContentAddressable {
-    fn object_id(&self) -> ObjectId;
-}
-
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct ObjectId(blake3::Hash);
-
-impl ObjectId {
-    fn to_path_buf(&self) -> PathBuf {
-        let text = self.0.to_hex();
-        Path::new(&text[0..2]).join(&text[2..])
-    }
-}
-
-impl Debug for ObjectId {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}({})", stringify!(ObjectId), self.0.to_hex())
-    }
-}
-
-impl Display for ObjectId {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}", self.0.to_hex())
-    }
-}
-
-impl PartialOrd for ObjectId {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.0.as_bytes().partial_cmp(&other.0.as_bytes())
-    }
-}
-
-impl Ord for ObjectId {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.as_bytes().cmp(&other.0.as_bytes())
-    }
-}
-
-impl<'de> Deserialize<'de> for ObjectId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let bytes: [u8; blake3::OUT_LEN] = hex::serde::deserialize(deserializer)?;
-        Ok(ObjectId(bytes.into()))
-    }
-}
-
-impl Serialize for ObjectId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.0.to_hex().serialize(serializer)
-    }
-}
-
-#[derive(Debug)]
-struct HashWriter<W> {
-    inner: W,
-    hasher: blake3::Hasher,
-}
-
-impl<W: Write> HashWriter<W> {
-    fn with_header(header: &[u8], inner: W) -> Self {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(header);
-        HashWriter { inner, hasher }
-    }
-
-    fn object_id(&self) -> ObjectId {
-        ObjectId(self.hasher.finalize())
-    }
-
-    fn into_inner(self) -> W {
-        self.inner
-    }
-}
-
-impl<W: Write> Write for HashWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let len = self.inner.write(buf)?;
-        self.hasher.update(&buf[0..len]);
-        Ok(len)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 enum ObjectKind {
@@ -201,11 +111,11 @@ struct Blob {
 
 impl Blob {
     fn from_vec(bytes: Vec<u8>, is_executable: bool) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = id::Hasher::new();
         hasher.update(if is_executable { b"exec:" } else { b"blob:" });
         hasher.update(&bytes);
         Blob {
-            object_id: ObjectId(hasher.finalize()),
+            object_id: hasher.finish(),
             stream: Box::new(std::io::Cursor::new(bytes)),
             is_executable,
         }
@@ -278,9 +188,9 @@ impl ContentAddressable for Tree {
             hasher.finish().to_be_bytes()
         };
 
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = id::Hasher::new();
         hasher.update(b"tree:").update(&tree_hash[..]);
-        ObjectId(hasher.finalize())
+        hasher.finish()
     }
 }
 
@@ -323,9 +233,9 @@ impl ContentAddressable for Package {
             hasher.finish().to_be_bytes()
         };
 
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = id::Hasher::new();
         hasher.update(b"pkg:").update(&pkg_hash[..]);
-        ObjectId(hasher.finalize())
+        hasher.finish()
     }
 }
 
@@ -802,11 +712,7 @@ impl Store for FsStore {
             let id_res = parts
                 .map(|(prefix, rest)| prefix.to_str().into_iter().chain(rest.to_str()).collect())
                 .ok_or(anyhow!("could not assemble object hash from path"))
-                .and_then(|hash: String| {
-                    let mut buf = [0u8; blake3::OUT_LEN];
-                    hex::decode_to_slice(&hash, &mut buf).context("file path is not valid hash")?;
-                    Ok(ObjectId(buf.into()))
-                });
+                .and_then(|hash: String| hash.parse());
 
             let kind_res = p
                 .extension()
