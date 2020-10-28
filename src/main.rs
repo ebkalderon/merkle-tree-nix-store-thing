@@ -429,24 +429,63 @@ impl Store for InMemoryStore {
 
 #[derive(Debug)]
 struct FsStore {
-    base: PathBuf,
+    objects_dir: PathBuf,
+    packages_dir: PathBuf,
 }
 
 impl FsStore {
-    fn open<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
+    pub fn open<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let base = path.into();
-        if base.is_dir() {
-            Ok(FsStore { base })
+        let objects_dir = base.join("objects");
+        let packages_dir = base.join("packages");
+
+        if objects_dir.is_dir() && packages_dir.is_dir() {
+            Ok(FsStore {
+                objects_dir,
+                packages_dir,
+            })
         } else if base.exists() {
-            Err(anyhow!("{} is not a directory", base.display()))
+            Err(anyhow!("`{}` is not a store directory", base.display()))
         } else {
-            Err(anyhow!("path {} does not exist", base.display()))
+            Err(anyhow!("could not open, `{}` not found", base.display()))
         }
     }
 
+    pub fn init<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
+        let base = path.into();
+        let objects_dir = base.join("objects");
+        let packages_dir = base.join("packages");
+
+        if !base.exists() {
+            std::fs::create_dir(&base).context("could not create new store directory")?;
+            std::fs::create_dir(&objects_dir).context("could not create `objects` dir")?;
+            std::fs::create_dir(&packages_dir).context("could not create `packages` dir")?;
+        }
+
+        Self::open(base)
+    }
+
+    pub fn init_bare<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
+        let base = path.into();
+        let objects_dir = base.join("objects");
+        let packages_dir = base.join("packages");
+
+        let entries = std::fs::read_dir(&base).context("could not bare-init store directory")?;
+        if entries.count() == 0 {
+            std::fs::create_dir(&objects_dir).context("could not create `objects` dir")?;
+            std::fs::create_dir(&packages_dir).context("could not create `packages` dir")?;
+        } else if !objects_dir.exists() || !packages_dir.exists() {
+            return Err(anyhow!("could not init store, expected empty directory"));
+        }
+
+        Ok(FsStore {
+            objects_dir,
+            packages_dir,
+        })
+    }
+
     fn checkout(&mut self, pkg: &Package) -> anyhow::Result<()> {
-        let packages_dir = self.base.join("packages");
-        let target_dir = packages_dir.join(pkg.id().to_string());
+        let target_dir = self.packages_dir.join(pkg.id().to_string());
 
         if target_dir.exists() {
             Ok(())
@@ -456,12 +495,10 @@ impl FsStore {
                 .iter()
                 .filter_map(|&id| self.get_package(id).ok())
                 .map(|pkg| pkg.id())
-                .filter(|id| !packages_dir.join(id.to_string()).exists())
+                .filter(|id| !self.packages_dir.join(id.to_string()).exists())
                 .collect();
 
             if missing_refs.is_empty() {
-                std::fs::create_dir_all(&packages_dir)?;
-
                 let tree = self.get_tree(pkg.tree)?;
                 let temp_dir = tempfile::tempdir()?;
                 self.write_tree(temp_dir.path(), tree)?;
@@ -493,7 +530,7 @@ impl FsStore {
                     self.write_tree(&entry_path, subtree)?;
                 }
                 Entry::Blob { id } => {
-                    let mut src = self.base.join("objects").join(id.to_path_buf());
+                    let mut src = self.objects_dir.join(id.to_path_buf());
                     src.set_extension("blob");
                     std::fs::hard_link(&src, &entry_path).map_err(|e| {
                         if e.kind() == std::io::ErrorKind::NotFound {
@@ -551,11 +588,11 @@ impl Store for FsStore {
         }
 
         let id = o.object_id();
-        let mut path = self.base.join("objects").join(id.to_path_buf());
+        let mut path = self.objects_dir.join(id.to_path_buf());
         let parent_dir = path.parent().expect("path cannot be at filesystem root");
 
         if !parent_dir.exists() {
-            std::fs::create_dir_all(parent_dir)?;
+            std::fs::create_dir(parent_dir)?;
         }
 
         path.set_extension(o.kind().as_str());
@@ -583,7 +620,7 @@ impl Store for FsStore {
     }
 
     fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Object> {
-        let mut path = self.base.join("objects").join(id.to_path_buf());
+        let mut path = self.objects_dir.join(id.to_path_buf());
 
         let kind_exists = if kind.is_some() {
             kind.filter(|k| {
@@ -621,7 +658,7 @@ impl Store for FsStore {
     }
 
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>> {
-        let entries = std::fs::read_dir(self.base.join("objects"))?
+        let entries = std::fs::read_dir(&self.objects_dir)?
             .filter_map(|r| r.ok())
             .filter_map(|entry| entry.path().read_dir().ok())
             .flat_map(|iter| iter.filter_map(|r| r.ok()))
@@ -652,7 +689,7 @@ impl Store for FsStore {
     }
 
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
-        let mut path = self.base.join("objects").join(id.to_path_buf());
+        let mut path = self.objects_dir.join(id.to_path_buf());
 
         if let Some(k) = kind {
             path.set_extension(k.as_str());
@@ -672,7 +709,7 @@ impl Store for FsStore {
 
 fn main() -> anyhow::Result<()> {
     // let mut store = InMemoryStore::default();
-    let mut store = FsStore::open("./store")?;
+    let mut store = FsStore::init("./store")?;
 
     let txt_id = store.insert_object(Object::Blob(Blob {
         bytes: b"foobarbaz".to_vec(),
