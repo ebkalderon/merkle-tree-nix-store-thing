@@ -152,13 +152,13 @@ impl FsStore {
 
 impl Store for FsStore {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
-        fn write_object<F>(p: &Path, perms: u32, mut ser_fn: F) -> anyhow::Result<()>
+        fn write_object<F>(p: &Path, perms: u32, mut write_fn: F) -> anyhow::Result<()>
         where
             F: FnMut(&std::fs::File) -> anyhow::Result<()>,
         {
             if !p.exists() {
                 let mut file = tempfile::NamedTempFile::new()?;
-                ser_fn(&file.as_file())?;
+                write_fn(&file.as_file())?;
                 file.flush()?;
 
                 let perms = std::fs::Permissions::from_mode(perms);
