@@ -180,6 +180,16 @@ struct Tree {
     entries: BTreeMap<String, Entry>,
 }
 
+impl Tree {
+    fn references(&self) -> impl Iterator<Item = (ObjectId, ObjectKind)> + '_ {
+        self.entries.values().filter_map(|entry| match entry {
+            Entry::Tree { id } => Some((*id, ObjectKind::Tree)),
+            Entry::Blob { id } => Some((*id, ObjectKind::Blob)),
+            Entry::Symlink { .. } => None,
+        })
+    }
+}
+
 impl ContentAddressable for Tree {
     fn object_id(&self) -> ObjectId {
         use std::hash::Hasher;
@@ -264,6 +274,48 @@ trait Store {
     fn get_package(&self, id: ObjectId) -> anyhow::Result<Option<Package>> {
         self.get_object(id, Some(ObjectKind::Package))
             .map(|opt| opt.and_then(|o| o.into_package().ok()))
+    }
+
+    fn closure_for(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Vec<(ObjectId, ObjectKind)>> {
+        #[derive(Clone, Copy, Eq, Hash, PartialEq, PartialOrd, Ord)]
+        struct Ref(ObjectId, ObjectKind);
+
+        impl Display for Ref {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                Display::fmt(&self.0, f)
+            }
+        }
+
+        let refs = pkgs
+            .into_iter()
+            .map(|id| Ref(id, ObjectKind::Package))
+            .collect();
+
+        let closure = compute_closure(refs, |Ref(id, kind)| match kind {
+            ObjectKind::Blob => Ok(BTreeSet::new()),
+            ObjectKind::Tree => {
+                let tree = self
+                    .get_tree(id)
+                    .and_then(|p| p.ok_or(anyhow!("object {} not found", id)))?;
+                Ok(tree.references().map(|(id, kind)| Ref(id, kind)).collect())
+            }
+            ObjectKind::Package => {
+                let p = self
+                    .get_package(id)
+                    .and_then(|p| p.ok_or(anyhow!("object {} not found", id)))?;
+                let tree_ref = Ref(p.tree, ObjectKind::Tree);
+                Ok(p.references
+                    .into_iter()
+                    .map(|id| Ref(id, ObjectKind::Package))
+                    .chain(std::iter::once(tree_ref))
+                    .collect())
+            }
+        })?;
+
+        Ok(closure
+            .into_iter()
+            .map(|Ref(id, kind)| (id, kind))
+            .collect())
     }
 }
 
@@ -678,6 +730,16 @@ fn main() -> anyhow::Result<()> {
 
     println!("program 'foo': {:?}", store.get_package(pkg_id)?.unwrap());
     println!("program 'bar': {:?}", store.get_package(pkg_id2)?.unwrap());
+
+    println!(
+        "closure for 'foo' and 'bar': {:?}",
+        store.closure_for({
+            let mut pkgs = BTreeSet::new();
+            pkgs.insert(pkg_id);
+            pkgs.insert(pkg_id2);
+            pkgs
+        })?
+    );
 
     Ok(())
 }
