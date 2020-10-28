@@ -20,6 +20,13 @@ trait ContentAddressable {
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct ObjectId(blake3::Hash);
 
+impl ObjectId {
+    fn to_path_buf(&self) -> PathBuf {
+        let text = self.0.to_hex();
+        Path::new(&text[0..2]).join(&text[2..])
+    }
+}
+
 impl Debug for ObjectId {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}({})", stringify!(ObjectId), self.0.to_hex())
@@ -486,8 +493,7 @@ impl FsStore {
                     self.write_tree(&entry_path, subtree)?;
                 }
                 Entry::Blob { id } => {
-                    let text = id.0.to_hex();
-                    let mut src = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
+                    let mut src = self.base.join("objects").join(id.to_path_buf());
                     src.set_extension("blob");
                     std::fs::hard_link(&src, &entry_path).map_err(|e| {
                         if e.kind() == std::io::ErrorKind::NotFound {
@@ -545,16 +551,14 @@ impl Store for FsStore {
         }
 
         let id = o.object_id();
-        let text = id.0.to_hex();
-        let mut path = self.base.join("objects").join(&text[0..2]);
+        let mut path = self.base.join("objects").join(id.to_path_buf());
+        let parent_dir = path.parent().expect("path cannot be at filesystem root");
 
-        if !path.exists() {
-            std::fs::create_dir_all(&path)?;
+        if !parent_dir.exists() {
+            std::fs::create_dir_all(parent_dir)?;
         }
 
-        path.push(&text[2..]);
         path.set_extension(o.kind().as_str());
-
         match o {
             Object::Blob(blob) => {
                 let perms = if blob.is_executable { 0o544 } else { 0o444 };
@@ -579,8 +583,7 @@ impl Store for FsStore {
     }
 
     fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Object> {
-        let text = id.0.to_hex();
-        let mut path = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
+        let mut path = self.base.join("objects").join(id.to_path_buf());
 
         let kind_exists = if kind.is_some() {
             kind.filter(|k| {
@@ -649,8 +652,7 @@ impl Store for FsStore {
     }
 
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
-        let text = id.0.to_hex();
-        let mut path = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
+        let mut path = self.base.join("objects").join(id.to_path_buf());
 
         if let Some(k) = kind {
             path.set_extension(k.as_str());
