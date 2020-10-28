@@ -257,23 +257,30 @@ type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, ObjectKind)
 
 trait Store {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId>;
-    fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Option<Object>>;
+    fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Object>;
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>>;
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool>;
 
-    fn get_blob(&self, id: ObjectId) -> anyhow::Result<Option<Blob>> {
-        self.get_object(id, Some(ObjectKind::Blob))
-            .map(|opt| opt.and_then(|o| o.into_blob().ok()))
+    fn get_blob(&self, id: ObjectId) -> anyhow::Result<Blob> {
+        self.get_object(id, Some(ObjectKind::Blob)).and_then(|o| {
+            o.into_blob()
+                .map_err(|_| anyhow!("{} is not a blob object", id))
+        })
     }
 
-    fn get_tree(&self, id: ObjectId) -> anyhow::Result<Option<Tree>> {
-        self.get_object(id, Some(ObjectKind::Tree))
-            .map(|opt| opt.and_then(|o| o.into_tree().ok()))
+    fn get_tree(&self, id: ObjectId) -> anyhow::Result<Tree> {
+        self.get_object(id, Some(ObjectKind::Tree)).and_then(|o| {
+            o.into_tree()
+                .map_err(|_| anyhow!("{} is not a tree object", id))
+        })
     }
 
-    fn get_package(&self, id: ObjectId) -> anyhow::Result<Option<Package>> {
+    fn get_package(&self, id: ObjectId) -> anyhow::Result<Package> {
         self.get_object(id, Some(ObjectKind::Package))
-            .map(|opt| opt.and_then(|o| o.into_package().ok()))
+            .and_then(|o| {
+                o.into_package()
+                    .map_err(|_| anyhow!("{} is not a package object", id))
+            })
     }
 
     fn closure_for(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Vec<(ObjectId, ObjectKind)>> {
@@ -294,15 +301,11 @@ trait Store {
         let closure = compute_closure(refs, |Ref(id, kind)| match kind {
             ObjectKind::Blob => Ok(BTreeSet::new()),
             ObjectKind::Tree => {
-                let tree = self
-                    .get_tree(id)
-                    .and_then(|p| p.ok_or(anyhow!("object {} not found", id)))?;
+                let tree = self.get_tree(id)?;
                 Ok(tree.references().map(|(id, kind)| Ref(id, kind)).collect())
             }
             ObjectKind::Package => {
-                let p = self
-                    .get_package(id)
-                    .and_then(|p| p.ok_or(anyhow!("object {} not found", id)))?;
+                let p = self.get_package(id)?;
                 let tree_ref = Ref(p.tree, ObjectKind::Tree);
                 Ok(p.references
                     .into_iter()
@@ -399,8 +402,11 @@ impl Store for InMemoryStore {
         Ok(id)
     }
 
-    fn get_object(&self, id: ObjectId, _: Option<ObjectKind>) -> anyhow::Result<Option<Object>> {
-        Ok(self.objects.get(&id).cloned())
+    fn get_object(&self, id: ObjectId, _: Option<ObjectKind>) -> anyhow::Result<Object> {
+        self.objects
+            .get(&id)
+            .cloned()
+            .ok_or(anyhow!("object {} not found", id))
     }
 
     fn iter_objects(&self) -> anyhow::Result<Objects<'_>> {
@@ -441,7 +447,7 @@ impl FsStore {
             let missing_refs: BTreeSet<_> = pkg
                 .references
                 .iter()
-                .filter_map(|&id| self.get_package(id).ok().flatten())
+                .filter_map(|&id| self.get_package(id).ok())
                 .map(|pkg| pkg.id())
                 .filter(|id| !packages_dir.join(id.to_string()).exists())
                 .collect();
@@ -449,12 +455,10 @@ impl FsStore {
             if missing_refs.is_empty() {
                 std::fs::create_dir_all(&packages_dir)?;
 
-                let tree = self
-                    .get_tree(pkg.tree)?
-                    .ok_or(anyhow!("root tree object {} not found", pkg.tree))?;
-
+                let tree = self.get_tree(pkg.tree)?;
                 let temp_dir = tempfile::tempdir()?;
                 self.write_tree(temp_dir.path(), tree)?;
+
                 let finished_dir = temp_dir.into_path();
                 std::fs::rename(finished_dir, target_dir)?;
 
@@ -478,10 +482,7 @@ impl FsStore {
             let entry_path = tree_dir.join(name);
             match entry {
                 Entry::Tree { id } => {
-                    let subtree = self
-                        .get_tree(*id)?
-                        .ok_or(anyhow!("tree object {} not found", id))?;
-
+                    let subtree = self.get_tree(*id)?;
                     self.write_tree(&entry_path, subtree)?;
                 }
                 Entry::Blob { id } => {
@@ -577,11 +578,11 @@ impl Store for FsStore {
         Ok(id)
     }
 
-    fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Option<Object>> {
+    fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Object> {
         let text = id.0.to_hex();
         let mut path = self.base.join("objects").join(&text[0..2]).join(&text[2..]);
 
-        let exists = if kind.is_some() {
+        let kind_exists = if kind.is_some() {
             kind.filter(|k| {
                 path.set_extension(k.as_str());
                 path.exists()
@@ -593,26 +594,26 @@ impl Store for FsStore {
             })
         };
 
-        match exists {
+        match kind_exists {
             Some(ObjectKind::Blob) => {
                 let bytes = std::fs::read(&path)?;
                 let is_executable = std::fs::metadata(path)?.mode() & 0o100 != 0;
-                Ok(Some(Object::Blob(Blob {
+                Ok(Object::Blob(Blob {
                     bytes,
                     is_executable,
-                })))
+                }))
             }
             Some(ObjectKind::Tree) => {
                 let reader = std::fs::File::open(path)?;
                 let tree = serde_json::from_reader(reader)?;
-                Ok(Some(Object::Tree(tree)))
+                Ok(Object::Tree(tree))
             }
             Some(ObjectKind::Package) => {
                 let reader = std::fs::File::open(path)?;
                 let package = serde_json::from_reader(reader)?;
-                Ok(Some(Object::Package(package)))
+                Ok(Object::Package(package))
             }
-            None => Ok(None),
+            None => Err(anyhow!("object {} not found", id)),
         }
     }
 
@@ -728,8 +729,8 @@ fn main() -> anyhow::Result<()> {
         }
     }))?;
 
-    println!("program 'foo': {:?}", store.get_package(pkg_id)?.unwrap());
-    println!("program 'bar': {:?}", store.get_package(pkg_id2)?.unwrap());
+    println!("program 'foo': {:?}", store.get_package(pkg_id)?);
+    println!("program 'bar': {:?}", store.get_package(pkg_id2)?);
 
     println!(
         "closure for 'foo' and 'bar': {:?}",
