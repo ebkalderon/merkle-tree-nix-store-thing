@@ -1,243 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::Hash;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use anyhow::{anyhow, Context};
 use filetime::FileTime;
-use serde::{Deserialize, Serialize};
 
-use self::id::{ContentAddressable, HashWriter, ObjectId};
-use self::util::PagedBuffer;
+use self::id::{ContentAddressable, ObjectId};
+use self::object::{Blob, Entry, Object, ObjectKind, Package, Tree};
 
 mod id;
+mod object;
 mod util;
-
-// Filesystem objects
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
-enum ObjectKind {
-    Blob,
-    Tree,
-    Package,
-}
-
-impl ObjectKind {
-    fn iter() -> impl Iterator<Item = Self> {
-        use std::iter::once;
-        once(ObjectKind::Blob)
-            .chain(once(ObjectKind::Tree))
-            .chain(once(ObjectKind::Package))
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            ObjectKind::Blob => "blob",
-            ObjectKind::Tree => "tree",
-            ObjectKind::Package => "pkg",
-        }
-    }
-}
-
-impl FromStr for ObjectKind {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "blob" => Ok(ObjectKind::Blob),
-            "tree" => Ok(ObjectKind::Tree),
-            "pkg" => Ok(ObjectKind::Package),
-            ext => Err(anyhow!("unrecognized object file extension: {}", ext)),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum Object {
-    Blob(Blob),
-    Tree(Tree),
-    Package(Package),
-}
-
-impl Object {
-    fn kind(&self) -> ObjectKind {
-        match *self {
-            Object::Blob(_) => ObjectKind::Blob,
-            Object::Tree(_) => ObjectKind::Tree,
-            Object::Package(_) => ObjectKind::Package,
-        }
-    }
-
-    fn into_blob(self) -> Result<Blob, Self> {
-        match self {
-            Object::Blob(b) => Ok(b),
-            other => Err(other),
-        }
-    }
-
-    fn into_tree(self) -> Result<Tree, Self> {
-        match self {
-            Object::Tree(t) => Ok(t),
-            other => Err(other),
-        }
-    }
-
-    fn into_package(self) -> Result<Package, Self> {
-        match self {
-            Object::Package(o) => Ok(o),
-            other => Err(other),
-        }
-    }
-}
-
-impl ContentAddressable for Object {
-    fn object_id(&self) -> ObjectId {
-        match *self {
-            Object::Blob(ref o) => o.object_id(),
-            Object::Tree(ref t) => t.object_id(),
-            Object::Package(ref o) => o.object_id(),
-        }
-    }
-}
-
-struct Blob {
-    stream: Box<dyn Read>,
-    is_executable: bool,
-    object_id: ObjectId,
-}
-
-impl Blob {
-    fn from_vec(bytes: Vec<u8>, is_executable: bool) -> Self {
-        let mut hasher = id::Hasher::new();
-        hasher.update(if is_executable { b"exec:" } else { b"blob:" });
-        hasher.update(&bytes);
-        Blob {
-            object_id: hasher.finish(),
-            stream: Box::new(std::io::Cursor::new(bytes)),
-            is_executable,
-        }
-    }
-
-    fn from_reader<R: Read>(mut reader: R, is_executable: bool) -> anyhow::Result<Self> {
-        let header = if is_executable { b"exec:" } else { b"blob:" };
-        let paged_writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
-        let mut writer = HashWriter::with_header(header, paged_writer);
-        std::io::copy(&mut reader, &mut writer)?;
-        Ok(Blob {
-            object_id: writer.object_id(),
-            stream: Box::new(writer.into_inner()),
-            is_executable,
-        })
-    }
-}
-
-impl ContentAddressable for Blob {
-    fn object_id(&self) -> ObjectId {
-        self.object_id
-    }
-}
-
-impl Debug for Blob {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.debug_struct(stringify!(Blob))
-            .field("is_executable", &self.is_executable)
-            .field("object_id", &self.object_id)
-            .finish()
-    }
-}
-
-impl Read for Blob {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.stream.read(buf)
-    }
-}
-
-#[derive(Clone, Debug, Hash, Deserialize, Serialize)]
-#[serde(tag = "type")]
-enum Entry {
-    Tree { id: ObjectId },
-    Blob { id: ObjectId },
-    Symlink { target: PathBuf },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct Tree {
-    entries: BTreeMap<String, Entry>,
-}
-
-impl Tree {
-    fn references(&self) -> impl Iterator<Item = (ObjectId, ObjectKind)> + '_ {
-        self.entries.values().filter_map(|entry| match entry {
-            Entry::Tree { id } => Some((*id, ObjectKind::Tree)),
-            Entry::Blob { id } => Some((*id, ObjectKind::Blob)),
-            Entry::Symlink { .. } => None,
-        })
-    }
-}
-
-impl ContentAddressable for Tree {
-    fn object_id(&self) -> ObjectId {
-        use std::hash::Hasher;
-
-        let tree_hash = {
-            let mut hasher = fnv::FnvHasher::default();
-            self.entries.hash(&mut hasher);
-            hasher.finish().to_be_bytes()
-        };
-
-        let mut hasher = id::Hasher::new();
-        hasher.update(b"tree:").update(&tree_hash[..]);
-        hasher.finish()
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-struct InstallName {
-    name: String,
-    id: ObjectId,
-}
-
-impl Display for InstallName {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}-{}", self.name, self.id)
-    }
-}
-
-#[derive(Clone, Debug, Hash, Deserialize, Serialize)]
-struct Package {
-    name: String,
-    system: String,
-    references: BTreeSet<ObjectId>,
-    tree: ObjectId,
-}
-
-impl Package {
-    fn install_name(&self) -> InstallName {
-        InstallName {
-            name: self.name.clone(),
-            id: self.object_id(),
-        }
-    }
-}
-
-impl ContentAddressable for Package {
-    fn object_id(&self) -> ObjectId {
-        use std::hash::Hasher;
-
-        let pkg_hash = {
-            let mut hasher = fnv::FnvHasher::default();
-            self.hash(&mut hasher);
-            hasher.finish().to_be_bytes()
-        };
-
-        let mut hasher = id::Hasher::new();
-        hasher.update(b"pkg:").update(&pkg_hash[..]);
-        hasher.finish()
-    }
-}
 
 // Store
 
@@ -394,10 +170,10 @@ impl InMemory {
         match o {
             Object::Blob(mut b) => {
                 let mut stream = Box::new(std::io::Cursor::new(Vec::new()));
-                std::io::copy(&mut b.stream, &mut stream)?;
+                std::io::copy(&mut b, &mut stream)?;
                 Ok(InMemory::Blob {
                     stream,
-                    is_executable: b.is_executable,
+                    is_executable: b.is_executable(),
                     object_id: b.object_id(),
                 })
             }
@@ -641,7 +417,7 @@ impl Store for FsStore {
         path.set_extension(o.kind().as_str());
         match o {
             Object::Blob(mut blob) => {
-                let perms = if blob.is_executable { 0o544 } else { 0o444 };
+                let perms = if blob.is_executable() { 0o544 } else { 0o444 };
                 write_object(&path, perms, |mut file| {
                     std::io::copy(&mut blob, &mut file)?;
                     Ok(())
