@@ -214,12 +214,12 @@ impl ContentAddressable for Tree {
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-struct PackageId {
+struct InstallName {
     name: String,
     id: ObjectId,
 }
 
-impl Display for PackageId {
+impl Display for InstallName {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}-{}", self.name, self.id)
     }
@@ -234,8 +234,8 @@ struct Package {
 }
 
 impl Package {
-    fn id(&self) -> PackageId {
-        PackageId {
+    fn install_name(&self) -> InstallName {
+        InstallName {
             name: self.name.clone(),
             id: self.object_id(),
         }
@@ -485,7 +485,7 @@ impl FsStore {
     }
 
     fn checkout(&mut self, pkg: &Package) -> anyhow::Result<()> {
-        let target_dir = self.packages_dir.join(pkg.id().to_string());
+        let target_dir = self.packages_dir.join(pkg.install_name().to_string());
 
         if target_dir.exists() {
             Ok(())
@@ -494,8 +494,8 @@ impl FsStore {
                 .references
                 .iter()
                 .filter_map(|&id| self.get_package(id).ok())
-                .map(|pkg| pkg.id())
-                .filter(|id| !self.packages_dir.join(id.to_string()).exists())
+                .map(|pkg| pkg.install_name())
+                .filter(|n| !self.packages_dir.join(n.to_string()).exists())
                 .collect();
 
             if missing_refs.is_empty() {
