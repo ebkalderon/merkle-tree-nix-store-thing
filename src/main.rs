@@ -70,6 +70,36 @@ impl Serialize for ObjectId {
     }
 }
 
+#[derive(Debug)]
+struct HashWriter<W> {
+    inner: W,
+    hasher: blake3::Hasher,
+}
+
+impl<W: Write> HashWriter<W> {
+    fn with_header(header: &[u8], inner: W) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(header);
+        HashWriter { inner, hasher }
+    }
+
+    fn object_id(&self) -> ObjectId {
+        ObjectId(self.hasher.finalize())
+    }
+}
+
+impl<W: Write> Write for HashWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let len = self.inner.write(buf)?;
+        self.hasher.update(&buf[0..len]);
+        Ok(len)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 enum ObjectKind {
     Blob,
