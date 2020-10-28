@@ -1,13 +1,13 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::{self, Debug, Display, Formatter};
+use std::hash::Hash;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{anyhow, Context};
-use blake3::Hash;
 use filetime::FileTime;
 use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 
@@ -18,7 +18,7 @@ trait ContentAddressable {
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct ObjectId(Hash);
+struct ObjectId(blake3::Hash);
 
 impl Debug for ObjectId {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -63,7 +63,7 @@ impl Serialize for ObjectId {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 enum ObjectKind {
     Blob,
     Tree,
@@ -182,7 +182,7 @@ struct Tree {
 
 impl ContentAddressable for Tree {
     fn object_id(&self) -> ObjectId {
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hasher;
 
         let tree_hash = {
             let mut hasher = fnv::FnvHasher::default();
@@ -227,7 +227,7 @@ impl Package {
 
 impl ContentAddressable for Package {
     fn object_id(&self) -> ObjectId {
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hasher;
 
         let pkg_hash = {
             let mut hasher = fnv::FnvHasher::default();
@@ -265,6 +265,74 @@ trait Store {
         self.get_object(id, Some(ObjectKind::Package))
             .map(|opt| opt.and_then(|o| o.into_package().ok()))
     }
+}
+
+fn compute_closure<T, F>(items: BTreeSet<T>, get_children: F) -> anyhow::Result<Vec<T>>
+where
+    T: Copy + Display + Eq + Hash + Ord,
+    F: FnMut(T) -> anyhow::Result<BTreeSet<T>>,
+{
+    struct ClosureBuilder<'a, T: Eq + Hash + Ord, F> {
+        initial_items: &'a BTreeSet<T>,
+        get_children: F,
+        visited: HashSet<T>,
+        parents: HashSet<T>,
+        topo_sorted_items: Vec<T>,
+    }
+
+    impl<'a, T, F> ClosureBuilder<'a, T, F>
+    where
+        T: Copy + Display + Eq + Hash + Ord,
+        F: FnMut(T) -> anyhow::Result<BTreeSet<T>>,
+    {
+        pub fn new(initial_items: &'a BTreeSet<T>, get_children: F) -> Self {
+            ClosureBuilder {
+                initial_items,
+                get_children,
+                visited: HashSet::new(),
+                parents: HashSet::new(),
+                topo_sorted_items: Vec::new(),
+            }
+        }
+
+        pub fn compute(mut self) -> anyhow::Result<Vec<T>> {
+            for item in self.initial_items {
+                self.visit_dfs(*item, None)?;
+            }
+
+            self.topo_sorted_items.reverse();
+            Ok(self.topo_sorted_items)
+        }
+
+        fn visit_dfs(&mut self, item: T, parent_item: Option<T>) -> anyhow::Result<()> {
+            if self.parents.contains(&item) {
+                return Err(anyhow!(
+                    "detected cycle in closure reference graph: {} -> {}",
+                    item,
+                    parent_item.unwrap()
+                ));
+            }
+
+            if !self.visited.insert(item) {
+                return Ok(());
+            }
+
+            self.parents.insert(item);
+
+            for child in (self.get_children)(item)? {
+                if child != item {
+                    self.visit_dfs(child, Some(item))?;
+                }
+            }
+
+            self.topo_sorted_items.push(item);
+            self.parents.remove(&item);
+
+            Ok(())
+        }
+    }
+
+    ClosureBuilder::new(&items, get_children).compute()
 }
 
 #[derive(Debug, Default)]
