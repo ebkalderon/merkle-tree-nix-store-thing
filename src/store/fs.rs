@@ -9,6 +9,9 @@ use filetime::FileTime;
 use super::{Objects, Store};
 use crate::object::{Blob, ContentAddressable, Entry, Object, ObjectId, ObjectKind, Package, Tree};
 
+const OBJECTS_SUBDIR: &str = "objects";
+const PACKAGES_SUBDIR: &str = "packages";
+
 #[derive(Debug)]
 pub struct FsStore {
     objects_dir: PathBuf,
@@ -18,8 +21,8 @@ pub struct FsStore {
 impl FsStore {
     pub fn open<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let base = path.into();
-        let objects_dir = base.join("objects");
-        let packages_dir = base.join("packages");
+        let objects_dir = base.join(OBJECTS_SUBDIR);
+        let packages_dir = base.join(PACKAGES_SUBDIR);
 
         if objects_dir.is_dir() && packages_dir.is_dir() {
             Ok(FsStore {
@@ -35,8 +38,8 @@ impl FsStore {
 
     pub fn init<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let base = path.into();
-        let objects_dir = base.join("objects");
-        let packages_dir = base.join("packages");
+        let objects_dir = base.join(OBJECTS_SUBDIR);
+        let packages_dir = base.join(PACKAGES_SUBDIR);
 
         if !base.exists() {
             std::fs::create_dir(&base).context("could not create new store directory")?;
@@ -49,8 +52,8 @@ impl FsStore {
 
     pub fn init_bare<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let base = path.into();
-        let objects_dir = base.join("objects");
-        let packages_dir = base.join("packages");
+        let objects_dir = base.join(OBJECTS_SUBDIR);
+        let packages_dir = base.join(PACKAGES_SUBDIR);
 
         let entries = std::fs::read_dir(&base).context("could not bare-init store directory")?;
         if entries.count() == 0 {
