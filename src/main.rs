@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::Hash;
-use std::io::Write;
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -10,6 +10,80 @@ use std::str::FromStr;
 use anyhow::{anyhow, Context};
 use filetime::FileTime;
 use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
+
+// Utility
+
+#[derive(Debug)]
+enum Storage {
+    Inline(Cursor<Box<[u8]>>, usize),
+    File(tempfile::NamedTempFile),
+}
+
+#[derive(Debug)]
+struct PagedBuffer {
+    inner: Storage,
+    threshold: usize,
+}
+
+impl PagedBuffer {
+    pub fn with_threshold(t: usize) -> Self {
+        let fixed_buf = Cursor::new(vec![0; t].into_boxed_slice());
+        PagedBuffer {
+            inner: Storage::Inline(fixed_buf, 0),
+            threshold: t,
+        }
+    }
+}
+
+impl Read for PagedBuffer {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self.inner {
+            Storage::Inline(ref mut b, _) => b.read(buf),
+            Storage::File(ref mut b) => b.read(buf),
+        }
+    }
+}
+
+impl Seek for PagedBuffer {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        match self.inner {
+            Storage::Inline(ref mut b, _) => b.seek(pos),
+            Storage::File(ref mut b) => b.seek(pos),
+        }
+    }
+}
+
+impl Write for PagedBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.inner {
+            Storage::Inline(ref mut b, ref mut bytes_written) => {
+                if *bytes_written + buf.len() > self.threshold {
+                    // TODO: Should we create this in a directory like `<store>/tmp` for security?
+                    let mut file = tempfile::NamedTempFile::new()?;
+                    std::io::copy(b, &mut file)?;
+                    file.as_file_mut().sync_all()?;
+
+                    let len = file.write(buf)?;
+                    self.inner = Storage::File(file);
+
+                    Ok(len)
+                } else {
+                    let len = b.write(buf)?;
+                    *bytes_written += len;
+                    Ok(len)
+                }
+            }
+            Storage::File(ref mut b) => b.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.inner {
+            Storage::Inline(ref mut b, _) => b.flush(),
+            Storage::File(ref mut b) => b.flush(),
+        }
+    }
+}
 
 // Filesystem objects
 
@@ -85,6 +159,10 @@ impl<W: Write> HashWriter<W> {
 
     fn object_id(&self) -> ObjectId {
         ObjectId(self.hasher.finalize())
+    }
+
+    fn into_inner(self) -> W {
+        self.inner
     }
 }
 
@@ -185,22 +263,55 @@ impl ContentAddressable for Object {
     }
 }
 
-#[derive(Debug)]
 struct Blob {
-    bytes: Vec<u8>,
+    stream: Box<dyn Read>,
     is_executable: bool,
+    object_id: ObjectId,
+}
+
+impl Blob {
+    fn from_vec(bytes: Vec<u8>, is_executable: bool) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(if is_executable { b"exec:" } else { b"blob:" });
+        hasher.update(&bytes);
+        Blob {
+            object_id: ObjectId(hasher.finalize()),
+            stream: Box::new(std::io::Cursor::new(bytes)),
+            is_executable,
+        }
+    }
+
+    fn from_reader<R: Read>(mut reader: R, is_executable: bool) -> anyhow::Result<Self> {
+        let header = if is_executable { b"exec:" } else { b"blob:" };
+        let paged_writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
+        let mut writer = HashWriter::with_header(header, paged_writer);
+        std::io::copy(&mut reader, &mut writer)?;
+        Ok(Blob {
+            object_id: writer.object_id(),
+            stream: Box::new(writer.into_inner()),
+            is_executable,
+        })
+    }
 }
 
 impl ContentAddressable for Blob {
     fn object_id(&self) -> ObjectId {
-        let mut hasher = blake3::Hasher::new();
-        if self.is_executable {
-            hasher.update(b"exec:");
-        } else {
-            hasher.update(b"blob:");
-        }
-        hasher.update(&self.bytes);
-        ObjectId(hasher.finalize())
+        self.object_id
+    }
+}
+
+impl Debug for Blob {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct(stringify!(Blob))
+            .field("is_executable", &self.is_executable)
+            .field("object_id", &self.object_id)
+            .finish()
+    }
+}
+
+impl Read for Blob {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.read(buf)
     }
 }
 
@@ -429,7 +540,11 @@ where
 
 #[derive(Clone, Debug)]
 enum InMemory {
-    Blob { bytes: Vec<u8>, is_executable: bool },
+    Blob {
+        stream: Box<std::io::Cursor<Vec<u8>>>,
+        is_executable: bool,
+        object_id: ObjectId,
+    },
     Tree(Tree),
     Package(Package),
 }
@@ -437,10 +552,15 @@ enum InMemory {
 impl InMemory {
     fn from_object(o: Object) -> anyhow::Result<Self> {
         match o {
-            Object::Blob(b) => Ok(InMemory::Blob {
-                bytes: b.bytes,
-                is_executable: b.is_executable,
-            }),
+            Object::Blob(mut b) => {
+                let mut stream = Box::new(std::io::Cursor::new(Vec::new()));
+                std::io::copy(&mut b.stream, &mut stream)?;
+                Ok(InMemory::Blob {
+                    stream,
+                    is_executable: b.is_executable,
+                    object_id: b.object_id(),
+                })
+            }
             Object::Tree(t) => Ok(InMemory::Tree(t)),
             Object::Package(p) => Ok(InMemory::Package(p)),
         }
@@ -459,11 +579,13 @@ impl From<InMemory> for Object {
     fn from(o: InMemory) -> Self {
         match o {
             InMemory::Blob {
-                bytes,
+                stream,
                 is_executable,
+                object_id,
             } => Object::Blob(Blob {
-                bytes,
+                stream,
                 is_executable,
+                object_id,
             }),
             InMemory::Tree(t) => Object::Tree(t),
             InMemory::Package(p) => Self::Package(p),
@@ -648,9 +770,9 @@ impl FsStore {
 
 impl Store for FsStore {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
-        fn write_object<F>(p: &Path, perms: u32, ser_fn: F) -> anyhow::Result<()>
+        fn write_object<F>(p: &Path, perms: u32, mut ser_fn: F) -> anyhow::Result<()>
         where
-            F: Fn(&std::fs::File) -> anyhow::Result<()>,
+            F: FnMut(&std::fs::File) -> anyhow::Result<()>,
         {
             if !p.exists() {
                 let mut file = tempfile::NamedTempFile::new()?;
@@ -678,10 +800,11 @@ impl Store for FsStore {
 
         path.set_extension(o.kind().as_str());
         match o {
-            Object::Blob(blob) => {
+            Object::Blob(mut blob) => {
                 let perms = if blob.is_executable { 0o544 } else { 0o444 };
                 write_object(&path, perms, |mut file| {
-                    file.write_all(&blob.bytes[..]).map_err(From::from)
+                    std::io::copy(&mut blob, &mut file)?;
+                    Ok(())
                 })?;
             }
             Object::Tree(tree) => {
@@ -717,12 +840,10 @@ impl Store for FsStore {
 
         match kind_exists {
             Some(ObjectKind::Blob) => {
-                let bytes = std::fs::read(&path)?;
-                let is_executable = std::fs::metadata(path)?.mode() & 0o100 != 0;
-                Ok(Object::Blob(Blob {
-                    bytes,
-                    is_executable,
-                }))
+                let reader = std::fs::File::open(path)?;
+                let is_executable = reader.metadata()?.mode() & 0o100 != 0;
+                let blob = Blob::from_reader(reader, is_executable)?;
+                Ok(Object::Blob(blob))
             }
             Some(ObjectKind::Tree) => {
                 let reader = std::fs::File::open(path)?;
@@ -792,18 +913,15 @@ fn main() -> anyhow::Result<()> {
     // let mut store = InMemoryStore::default();
     let mut store = FsStore::init("./store")?;
 
-    let txt_id = store.insert_object(Object::Blob(Blob {
-        bytes: b"foobarbaz".to_vec(),
-        is_executable: false,
-    }))?;
-    let rs_id = store.insert_object(Object::Blob(Blob {
-        bytes: b"fn main() {}".to_vec(),
-        is_executable: false,
-    }))?;
-    let sh_id = store.insert_object(Object::Blob(Blob {
-        bytes: b"echo \"hi\"".to_vec(),
-        is_executable: true,
-    }))?;
+    let txt_id = store.insert_object(Object::Blob(Blob::from_reader(
+        std::io::Cursor::new(b"foobarbaz".to_vec()),
+        false,
+    )?))?;
+    let rs_id = store.insert_object(Object::Blob(Blob::from_vec(
+        b"fn main() {}".to_vec(),
+        false,
+    )))?;
+    let sh_id = store.insert_object(Object::Blob(Blob::from_vec(b"echo \"hi\"".to_vec(), true)))?;
 
     let sub_tree_id = store.insert_object(Object::Tree({
         let mut entries = BTreeMap::new();
