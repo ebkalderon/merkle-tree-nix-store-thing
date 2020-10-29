@@ -8,6 +8,7 @@ use filetime::FileTime;
 
 use super::{Objects, Store};
 use crate::object::{Blob, ContentAddressable, Entry, Object, ObjectId, ObjectKind, Package, Tree};
+use crate::util;
 
 const OBJECTS_SUBDIR: &str = "objects";
 const PACKAGES_SUBDIR: &str = "packages";
@@ -181,7 +182,7 @@ impl Store for FsStore {
             Object::Blob(mut blob) => {
                 let perms = if blob.is_executable() { 0o544 } else { 0o444 };
                 write_object(&path, perms, |mut file| {
-                    std::io::copy(&mut blob, &mut file)?;
+                    util::copy_wide(&mut blob, &mut file)?;
                     Ok(())
                 })?;
             }

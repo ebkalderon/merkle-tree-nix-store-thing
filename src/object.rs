@@ -132,7 +132,7 @@ impl Blob {
         let header = blob_header(is_executable);
         let mut hasher = HashWriter::with_header(header, std::io::sink());
 
-        std::io::copy(&mut file, &mut hasher)?;
+        util::copy_wide(&mut file, &mut hasher)?;
         file.seek(SeekFrom::Start(0))?;
 
         Ok(Blob {
@@ -146,7 +146,7 @@ impl Blob {
         let header = blob_header(is_executable);
         let paged_writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
         let mut writer = HashWriter::with_header(header, paged_writer);
-        std::io::copy(&mut reader, &mut writer)?;
+        util::copy_wide(&mut reader, &mut writer)?;
         Ok(Blob {
             object_id: writer.object_id(),
             stream: Box::new(writer.into_inner()),

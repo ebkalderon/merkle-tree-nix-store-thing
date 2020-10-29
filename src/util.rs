@@ -46,7 +46,7 @@ impl Write for PagedBuffer {
                 if inner.get_ref().len() + buf.len() > self.threshold {
                     // TODO: Should we create this in a directory like `<store>/tmp` for security?
                     let mut file = tempfile::NamedTempFile::new()?;
-                    std::io::copy(inner, &mut file)?;
+                    copy_wide(inner, &mut file)?;
                     file.as_file_mut().sync_data()?;
 
                     let len = file.write(buf)?;
@@ -65,6 +65,22 @@ impl Write for PagedBuffer {
         match self.inner {
             Storage::Inline(ref mut inner) => inner.flush(),
             Storage::File(ref mut inner) => inner.flush(),
+        }
+    }
+}
+
+pub fn copy_wide<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> std::io::Result<u64> {
+    let mut buffer = [0; 65536];
+    let mut total = 0;
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(n) => {
+                writer.write_all(&buffer[..n])?;
+                total += n as u64;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
         }
     }
 }
