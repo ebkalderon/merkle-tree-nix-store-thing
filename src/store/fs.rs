@@ -222,19 +222,22 @@ impl Store for FsStore {
 
         match kind_exists {
             Some(ObjectKind::Blob) => {
-                let reader = std::fs::File::open(path)?;
-                let is_executable = reader.metadata()?.mode() & 0o100 != 0;
-                let blob = Blob::from_reader(reader, is_executable)?;
-                Ok(Object::Blob(blob))
+                let file = std::fs::File::open(path)?;
+                let is_executable = file.metadata()?.mode() & 0o100 != 0;
+                Ok(Object::Blob(Blob {
+                    stream: Box::new(file),
+                    is_executable,
+                    object_id: id,
+                }))
             }
             Some(ObjectKind::Tree) => {
-                let reader = std::fs::File::open(path)?;
-                let tree = serde_json::from_reader(reader)?;
+                let file = std::fs::File::open(path)?;
+                let tree = serde_json::from_reader(file)?;
                 Ok(Object::Tree(tree))
             }
             Some(ObjectKind::Package) => {
-                let reader = std::fs::File::open(path)?;
-                let package = serde_json::from_reader(reader)?;
+                let file = std::fs::File::open(path)?;
+                let package = serde_json::from_reader(file)?;
                 Ok(Object::Package(package))
             }
             None => Err(anyhow!("object {} not found", id)),
