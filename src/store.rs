@@ -1,5 +1,5 @@
 pub use self::fs::FsStore;
-pub use self::mem::InMemoryStore;
+pub use self::mem::MemoryStore;
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::{self, Display, Formatter};

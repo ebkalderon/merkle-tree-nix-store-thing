@@ -7,7 +7,7 @@ use super::{Objects, Store};
 use crate::object::{Blob, ContentAddressable, Object, ObjectId, ObjectKind, Package, Tree};
 
 #[derive(Clone, Debug)]
-enum InMemory {
+enum Inline {
     Blob {
         stream: Box<Cursor<Vec<u8>>>,
         is_executable: bool,
@@ -17,36 +17,36 @@ enum InMemory {
     Package(Package),
 }
 
-impl InMemory {
+impl Inline {
     fn from_object(o: Object) -> anyhow::Result<Self> {
         match o {
             Object::Blob(mut b) => {
                 let mut stream = Box::new(std::io::Cursor::new(Vec::new()));
                 std::io::copy(&mut b.stream, &mut stream)?;
-                Ok(InMemory::Blob {
+                Ok(Inline::Blob {
                     stream,
                     is_executable: b.is_executable(),
                     object_id: b.object_id(),
                 })
             }
-            Object::Tree(t) => Ok(InMemory::Tree(t)),
-            Object::Package(p) => Ok(InMemory::Package(p)),
+            Object::Tree(t) => Ok(Inline::Tree(t)),
+            Object::Package(p) => Ok(Inline::Package(p)),
         }
     }
 
     fn kind(&self) -> ObjectKind {
         match *self {
-            InMemory::Blob { .. } => ObjectKind::Blob,
-            InMemory::Tree(_) => ObjectKind::Tree,
-            InMemory::Package(_) => ObjectKind::Package,
+            Inline::Blob { .. } => ObjectKind::Blob,
+            Inline::Tree(_) => ObjectKind::Tree,
+            Inline::Package(_) => ObjectKind::Package,
         }
     }
 }
 
-impl From<InMemory> for Object {
-    fn from(o: InMemory) -> Self {
+impl From<Inline> for Object {
+    fn from(o: Inline) -> Self {
         match o {
-            InMemory::Blob {
+            Inline::Blob {
                 stream,
                 is_executable,
                 object_id,
@@ -55,25 +55,25 @@ impl From<InMemory> for Object {
                 is_executable,
                 object_id,
             }),
-            InMemory::Tree(t) => Object::Tree(t),
-            InMemory::Package(p) => Self::Package(p),
+            Inline::Tree(t) => Object::Tree(t),
+            Inline::Package(p) => Self::Package(p),
         }
     }
 }
 
 #[derive(Debug, Default)]
-pub struct InMemoryStore {
-    objects: BTreeMap<ObjectId, InMemory>,
+pub struct MemoryStore {
+    objects: BTreeMap<ObjectId, Inline>,
 }
 
-impl Store for InMemoryStore {
+impl Store for MemoryStore {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
         use std::collections::btree_map::Entry;
         let id = o.object_id();
         match self.objects.entry(id) {
             Entry::Occupied(_) => Ok(id),
             Entry::Vacant(e) => {
-                e.insert(InMemory::from_object(o)?);
+                e.insert(Inline::from_object(o)?);
                 Ok(id)
             }
         }

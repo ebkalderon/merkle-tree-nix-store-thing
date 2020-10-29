@@ -8,7 +8,7 @@ mod store;
 mod util;
 
 fn main() -> anyhow::Result<()> {
-    // let mut store = store::InMemoryStore::default();
+    // let mut store = store::MemoryStore::default();
     let mut store = store::FsStore::init("./store")?;
 
     let txt_id = store.insert_object(Object::Blob(Blob::from_reader(
