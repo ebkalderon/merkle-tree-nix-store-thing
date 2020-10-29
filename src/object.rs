@@ -9,6 +9,7 @@ use std::str::FromStr;
 
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 use crate::util::{self, PagedBuffer};
 
@@ -217,7 +218,7 @@ impl ContentAddressable for Tree {
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct InstallName {
-    pub name: String,
+    pub name: SmolStr,
     pub id: ObjectId,
 }
 
@@ -229,7 +230,7 @@ impl Display for InstallName {
 
 #[derive(Clone, Debug, Hash, Deserialize, Serialize)]
 pub struct Package {
-    pub name: String,
+    pub name: SmolStr,
     pub system: String,
     pub references: BTreeSet<ObjectId>,
     pub tree: ObjectId,
