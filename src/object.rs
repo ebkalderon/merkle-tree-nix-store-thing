@@ -112,8 +112,7 @@ pub struct Blob {
 impl Blob {
     pub fn from_vec(bytes: Vec<u8>, is_executable: bool) -> Self {
         let mut hasher = id::Hasher::new();
-        hasher.update(if is_executable { b"exec:" } else { b"blob:" });
-        hasher.update(&bytes);
+        hasher.update(blob_header(is_executable)).update(&bytes);
         Blob {
             object_id: hasher.finish(),
             stream: Box::new(std::io::Cursor::new(bytes)),
@@ -122,7 +121,7 @@ impl Blob {
     }
 
     pub fn from_reader<R: Read>(mut reader: R, is_executable: bool) -> anyhow::Result<Self> {
-        let header = if is_executable { b"exec:" } else { b"blob:" };
+        let header = blob_header(is_executable);
         let paged_writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
         let mut writer = HashWriter::with_header(header, paged_writer);
         std::io::copy(&mut reader, &mut writer)?;
@@ -156,6 +155,14 @@ impl Debug for Blob {
 impl Read for Blob {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.stream.read(buf)
+    }
+}
+
+const fn blob_header(is_executable: bool) -> &'static [u8] {
+    if is_executable {
+        b"exec:"
+    } else {
+        b"blob:"
     }
 }
 
