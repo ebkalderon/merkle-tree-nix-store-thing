@@ -2,7 +2,7 @@ pub use self::id::{HashWriter, Hasher, ObjectId};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug, Display, Formatter};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -130,14 +130,14 @@ impl Blob {
         let is_executable = file.metadata()?.mode() & 0o100 != 0;
 
         let header = blob_header(is_executable);
-        let mut hasher = HashWriter::with_header(header, std::io::sink());
+        let temp = tempfile::tempfile()?;
+        let mut writer = HashWriter::with_header(header, temp);
 
-        util::copy_wide(&mut file, &mut hasher)?;
-        file.seek(SeekFrom::Start(0))?;
+        util::copy_wide(&mut file, &mut writer)?;
 
         Ok(Blob {
-            object_id: hasher.object_id(),
-            stream: Box::new(file),
+            object_id: writer.object_id(),
+            stream: Box::new(writer.into_inner()),
             is_executable,
         })
     }
