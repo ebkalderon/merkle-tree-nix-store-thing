@@ -16,9 +16,9 @@ store design and not an intensional design.
 
 ## Future work
 
-* Closure computation and copying over the network, although not implemented
-  yet, could be made much more efficient under this model than standard Nix
-  thanks to the magic of Merkle trees.
+* Copying closures over the network, although not implemented yet, could be made
+  much more efficient under this model than standard Nix thanks to the magic of
+  Merkle trees.
 * Like Git and OSTree, the Merkle tree structure in the `objects` directory
   should enable efficient garbage collection to be implemented without requiring
   a shared `nix-daemon` nor a SQLite database to improve lookup performance.
