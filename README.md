@@ -48,24 +48,24 @@ $ cargo run
 $ tree ./store
 store
 ├── objects
-│   ├── 62
-│   │   └── c9a72b3b8455ad838992cb8003146349999d3355eaf100e603925a4c0340d8.tree
-│   ├── 97
-│   │   └── ba70e671c28d5e04bc85b549696520db72612a8919f0b79d3f47d6c746bf91.pkg
+│   ├── 48
+│   │   └── 642aa3b535c3d2b8223b4ae8b0f9a62f1d5f1c769d136cb0da301264649603.tree
 │   ├── 9f
 │   │   └── cb43efcfdcc0cffb5bb2c2b386c0e75c1d9e01321b0f62f2bf907ec6557f60.blob
 │   ├── ab
 │   │   └── 4db9898d125eb5f4b396fefd45b32fdb5a663e16855bcff29b9e18dc0f6f2f.blob
-│   ├── c7
-│   │   └── 8e56cd02199f7ca9d2c8bb4fafe99ad769a29cb4ca5f56dea0eee64fb8a061.tree
+│   ├── ac
+│   │   └── 0d0d568df5b048a83b2e1a6f81120266695d0f2d5843d3ed69bf4e5379146d.pkg
+│   ├── c1
+│   │   └── 7cb4d06cb51d69238b70e45766e9b265c7d70cb5c23e510ce2a940610c3e64.pkg
 │   ├── ca
 │   │   └── 290b71a756a43da3eaedcab8afbbe594af6f25dd696ce877c5ceb3fe24c892.blob
-│   └── e9
-│       └── cf339074177568f30d96c56aa1e729b6bb21cbea5f3d835bdae717c139c65a.pkg
+│   └── dc
+│       └── 0675565eada2f4d0df31f5a7d8c0c06c256decd6404ba3eee560686374332f.tree
 └── packages
-    ├── bar-e9cf339074177568f30d96c56aa1e729b6bb21cbea5f3d835bdae717c139c65a
+    ├── bar-c17cb4d06cb51d69238b70e45766e9b265c7d70cb5c23e510ce2a940610c3e64
     │   └── main.rs
-    └── foo-97ba70e671c28d5e04bc85b549696520db72612a8919f0b79d3f47d6c746bf91
+    └── foo-ac0d0d568df5b048a83b2e1a6f81120266695d0f2d5843d3ed69bf4e5379146d
         ├── bar.sh
         ├── baz.rs -> ./src/main.rs
         ├── foo.txt

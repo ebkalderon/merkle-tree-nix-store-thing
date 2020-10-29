@@ -2,7 +2,6 @@ pub use self::id::{HashWriter, Hasher, ObjectId};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug, Display, Formatter};
-use std::hash::Hash;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -209,14 +208,7 @@ impl Tree {
 
 impl ContentAddressable for Tree {
     fn object_id(&self) -> ObjectId {
-        use std::hash::Hasher;
-
-        let tree_hash = {
-            let mut hasher = fnv::FnvHasher::default();
-            self.entries.hash(&mut hasher);
-            hasher.finish().to_be_bytes()
-        };
-
+        let tree_hash = serde_json::to_vec(self).unwrap();
         let mut hasher = id::Hasher::new();
         hasher.update(b"tree:").update(&tree_hash[..]);
         hasher.finish()
@@ -254,14 +246,7 @@ impl Package {
 
 impl ContentAddressable for Package {
     fn object_id(&self) -> ObjectId {
-        use std::hash::Hasher;
-
-        let pkg_hash = {
-            let mut hasher = fnv::FnvHasher::default();
-            self.hash(&mut hasher);
-            hasher.finish().to_be_bytes()
-        };
-
+        let pkg_hash = serde_json::to_vec(self).unwrap();
         let mut hasher = id::Hasher::new();
         hasher.update(b"pkg:").update(&pkg_hash[..]);
         hasher.finish()
