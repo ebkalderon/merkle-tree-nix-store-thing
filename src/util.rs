@@ -48,7 +48,7 @@ impl Write for PagedBuffer {
                     // TODO: Should we create this in a directory like `<store>/tmp` for security?
                     let mut file = tempfile::NamedTempFile::new()?;
                     std::io::copy(b, &mut file)?;
-                    file.as_file_mut().sync_all()?;
+                    file.as_file_mut().sync_data()?;
 
                     let len = file.write(buf)?;
                     self.inner = Storage::File(file);
