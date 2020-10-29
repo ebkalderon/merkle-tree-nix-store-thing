@@ -117,12 +117,9 @@ impl FsStore {
                 Entry::Blob { id } => {
                     let mut src = self.objects_dir.join(id.to_path_buf());
                     src.set_extension("blob");
-                    std::fs::hard_link(&src, &entry_path).map_err(|e| {
-                        if e.kind() == std::io::ErrorKind::NotFound {
-                            anyhow!("blob object {} not found", id)
-                        } else {
-                            e.into()
-                        }
+                    std::fs::hard_link(&src, &entry_path).map_err(|e| match e.kind() {
+                        std::io::ErrorKind::NotFound => anyhow!("blob object {} not found", id),
+                        _ => e.into(),
                     })?;
                     println!(
                         "=> hard-linked blob: {} -> {}",
