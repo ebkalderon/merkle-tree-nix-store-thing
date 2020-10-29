@@ -159,7 +159,6 @@ impl Store for FsStore {
             if !p.exists() {
                 let mut file = tempfile::NamedTempFile::new()?;
                 write_fn(&file.as_file())?;
-                file.flush()?;
 
                 let perms = std::fs::Permissions::from_mode(perms);
                 file.as_file_mut().set_permissions(perms)?;
@@ -191,13 +190,17 @@ impl Store for FsStore {
             }
             Object::Tree(tree) => {
                 write_object(&path, 0o444, |mut file| {
-                    serde_json::to_writer(&mut file, &tree).map_err(From::from)
+                    serde_json::to_writer(&mut file, &tree)?;
+                    file.flush()?;
+                    Ok(())
                 })?;
             }
             Object::Package(pkg) => {
                 self.checkout(&pkg)?;
                 write_object(&path, 0o444, |mut file| {
-                    serde_json::to_writer(&mut file, &pkg).map_err(From::from)
+                    serde_json::to_writer(&mut file, &pkg)?;
+                    file.flush()?;
+                    Ok(())
                 })?;
             }
         }
