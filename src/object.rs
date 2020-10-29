@@ -15,6 +15,10 @@ use crate::util::{self, PagedBuffer};
 
 mod id;
 
+const BLOB_FILE_EXT: &str = "blob";
+const TREE_FILE_EXT: &str = "tree";
+const PACKAGE_FILE_EXT: &str = "pkg";
+
 pub trait ContentAddressable {
     fn object_id(&self) -> ObjectId;
 }
@@ -36,9 +40,9 @@ impl ObjectKind {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            ObjectKind::Blob => "blob",
-            ObjectKind::Tree => "tree",
-            ObjectKind::Package => "pkg",
+            ObjectKind::Blob => BLOB_FILE_EXT,
+            ObjectKind::Tree => TREE_FILE_EXT,
+            ObjectKind::Package => PACKAGE_FILE_EXT,
         }
     }
 }
@@ -48,9 +52,9 @@ impl FromStr for ObjectKind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "blob" => Ok(ObjectKind::Blob),
-            "tree" => Ok(ObjectKind::Tree),
-            "pkg" => Ok(ObjectKind::Package),
+            BLOB_FILE_EXT => Ok(ObjectKind::Blob),
+            TREE_FILE_EXT => Ok(ObjectKind::Tree),
+            PACKAGE_FILE_EXT => Ok(ObjectKind::Package),
             ext => Err(anyhow!("unrecognized object file extension: {}", ext)),
         }
     }
