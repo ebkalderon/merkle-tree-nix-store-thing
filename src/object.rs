@@ -3,14 +3,15 @@ pub use self::id::{HashWriter, Hasher, ObjectId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::hash::Hash;
-use std::io::Read;
-use std::path::PathBuf;
+use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
-use crate::util::PagedBuffer;
+use crate::util::{self, PagedBuffer};
 
 mod id;
 
@@ -118,6 +119,23 @@ impl Blob {
             stream: Box::new(std::io::Cursor::new(bytes)),
             is_executable,
         }
+    }
+
+    pub fn from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+        let mut file = std::fs::File::open(path)?;
+        let is_executable = file.metadata()?.mode() & 0o100 != 0;
+
+        let header = blob_header(is_executable);
+        let mut hasher = HashWriter::with_header(header, std::io::sink());
+
+        std::io::copy(&mut file, &mut hasher)?;
+        file.seek(SeekFrom::Start(0))?;
+
+        Ok(Blob {
+            object_id: hasher.object_id(),
+            stream: Box::new(file),
+            is_executable,
+        })
     }
 
     pub fn from_reader<R: Read>(mut reader: R, is_executable: bool) -> anyhow::Result<Self> {
