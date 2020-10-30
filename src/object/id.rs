@@ -83,6 +83,11 @@ impl Hasher {
         self
     }
 
+    pub fn par_update(&mut self, bytes: &[u8]) -> &mut Self {
+        self.0.update_with_join::<blake3::join::RayonJoin>(bytes);
+        self
+    }
+
     pub fn finish(&self) -> ObjectId {
         ObjectId(self.0.finalize())
     }

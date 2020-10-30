@@ -22,7 +22,7 @@ impl Inline {
         match o {
             Object::Blob(mut b) => {
                 let mut stream = Box::new(std::io::Cursor::new(Vec::new()));
-                std::io::copy(&mut b.stream, &mut stream)?;
+                std::io::copy(&mut b, &mut stream)?;
                 Ok(Inline::Blob {
                     stream,
                     is_executable: b.is_executable(),
@@ -50,11 +50,7 @@ impl From<Inline> for Object {
                 stream,
                 is_executable,
                 object_id,
-            } => Object::Blob(Blob {
-                stream,
-                is_executable,
-                object_id,
-            }),
+            } => Object::Blob(Blob::from_reader_raw(stream, is_executable, object_id)),
             Inline::Tree(t) => Object::Tree(t),
             Inline::Package(p) => Self::Package(p),
         }

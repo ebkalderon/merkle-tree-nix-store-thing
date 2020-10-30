@@ -2,12 +2,14 @@ pub use self::id::{HashWriter, Hasher, ObjectId};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Debug, Display, Formatter};
-use std::io::Read;
-use std::os::unix::fs::MetadataExt;
+use std::io::{Cursor, Read, Write};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::anyhow;
+use filetime::FileTime;
+use memmap::{Mmap, MmapOptions};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -108,10 +110,17 @@ impl ContentAddressable for Object {
     }
 }
 
+enum Kind {
+    Reader(Box<dyn Read>),
+    Paged(PagedBuffer),
+    File(tempfile::NamedTempFile),
+    Mmap(Cursor<Mmap>),
+}
+
 pub struct Blob {
-    pub(crate) stream: Box<dyn Read>,
-    pub(crate) is_executable: bool,
-    pub(crate) object_id: ObjectId,
+    stream: Kind,
+    is_executable: bool,
+    object_id: ObjectId,
 }
 
 impl Blob {
@@ -120,26 +129,45 @@ impl Blob {
         hasher.update(blob_header(is_executable)).update(&bytes);
         Blob {
             object_id: hasher.finish(),
-            stream: Box::new(std::io::Cursor::new(bytes)),
+            stream: Kind::Reader(Box::new(Cursor::new(bytes))),
             is_executable,
         }
     }
 
     pub fn from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let mut file = std::fs::File::open(path)?;
-        let is_executable = file.metadata()?.mode() & 0o100 != 0;
-
+        let mut file = std::fs::File::open(&path)?;
+        let metadata = file.metadata()?;
+        let is_executable = metadata.mode() & 0o100 != 0;
         let header = blob_header(is_executable);
-        let temp = tempfile::tempfile()?;
-        let mut writer = HashWriter::with_header(header, temp);
 
-        util::copy_wide(&mut file, &mut writer)?;
-
-        Ok(Blob {
-            object_id: writer.object_id(),
-            stream: Box::new(writer.into_inner()),
-            is_executable,
-        })
+        if metadata.len() < 16 * 1024 {
+            let buffer = Cursor::new(Vec::with_capacity(metadata.len() as usize));
+            let mut writer = HashWriter::with_header(header, buffer);
+            util::copy_wide(&mut file, &mut writer)?;
+            Ok(Blob {
+                object_id: writer.object_id(),
+                stream: Kind::Reader(Box::new(writer.into_inner())),
+                is_executable,
+            })
+        } else if metadata.len() <= isize::max_value() as u64 {
+            let mmap = unsafe { MmapOptions::new().len(metadata.len() as usize).map(&file)? };
+            let mut hasher = id::Hasher::new();
+            hasher.update(header).par_update(&mmap);
+            Ok(Blob {
+                object_id: hasher.finish(),
+                stream: Kind::Mmap(Cursor::new(mmap)),
+                is_executable,
+            })
+        } else {
+            let temp = tempfile::NamedTempFile::new()?;
+            let mut writer = HashWriter::with_header(header, temp);
+            util::copy_wide(&mut file, &mut writer)?;
+            Ok(Blob {
+                object_id: writer.object_id(),
+                stream: Kind::File(writer.into_inner()),
+                is_executable,
+            })
+        }
     }
 
     pub fn from_reader<R: Read>(mut reader: R, is_executable: bool) -> anyhow::Result<Self> {
@@ -147,15 +175,67 @@ impl Blob {
         let paged_writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
         let mut writer = HashWriter::with_header(header, paged_writer);
         util::copy_wide(&mut reader, &mut writer)?;
+
         Ok(Blob {
             object_id: writer.object_id(),
-            stream: Box::new(writer.into_inner()),
+            stream: Kind::Paged(writer.into_inner()),
             is_executable,
         })
     }
 
+    pub(crate) fn from_reader_raw(
+        reader: Box<dyn Read>,
+        is_executable: bool,
+        object_id: ObjectId,
+    ) -> Self {
+        Blob {
+            object_id,
+            stream: Kind::Reader(reader),
+            is_executable,
+        }
+    }
+
     pub fn is_executable(&self) -> bool {
         self.is_executable
+    }
+
+    pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
+        if !dest.exists() {
+            let mode = if self.is_executable { 0o544 } else { 0o444 };
+            let perms = std::fs::Permissions::from_mode(mode);
+
+            match self.stream {
+                Kind::Reader(mut inner) => {
+                    let mut temp = tempfile::NamedTempFile::new()?;
+                    util::copy_wide(&mut inner, &mut temp)?;
+
+                    temp.as_file_mut().set_permissions(perms)?;
+                    filetime::set_file_mtime(temp.path(), FileTime::zero())?;
+
+                    temp.persist(dest)?;
+                }
+                Kind::Paged(inner) => inner.persist(dest, perms)?,
+                Kind::File(mut inner) => {
+                    inner.as_file_mut().set_permissions(perms)?;
+                    filetime::set_file_mtime(inner.path(), FileTime::zero())?;
+                    inner.persist(dest)?;
+                }
+                Kind::Mmap(inner) => {
+                    let mut temp = tempfile::NamedTempFile::new()?;
+                    let mut writer = std::io::BufWriter::with_capacity(64 * 1024, &mut temp);
+                    writer.write_all(inner.get_ref())?;
+                    writer.flush()?;
+                    drop(writer);
+
+                    temp.as_file_mut().set_permissions(perms)?;
+                    filetime::set_file_mtime(temp.path(), FileTime::zero())?;
+
+                    temp.persist(dest)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -176,7 +256,12 @@ impl Debug for Blob {
 
 impl Read for Blob {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.stream.read(buf)
+        match self.stream {
+            Kind::Reader(ref mut inner) => inner.read(buf),
+            Kind::Paged(ref mut inner) => inner.read(buf),
+            Kind::File(ref mut inner) => inner.read(buf),
+            Kind::Mmap(ref mut inner) => inner.read(buf),
+        }
     }
 }
 

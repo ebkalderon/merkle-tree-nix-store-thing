@@ -8,7 +8,6 @@ use filetime::FileTime;
 
 use super::{Objects, Store};
 use crate::object::{Blob, ContentAddressable, Entry, Object, ObjectId, ObjectKind, Package, Tree};
-use crate::util;
 
 const OBJECTS_SUBDIR: &str = "objects";
 const PACKAGES_SUBDIR: &str = "packages";
@@ -179,13 +178,7 @@ impl Store for FsStore {
 
         path.set_extension(o.kind().as_str());
         match o {
-            Object::Blob(mut blob) => {
-                let perms = if blob.is_executable() { 0o544 } else { 0o444 };
-                write_object(&path, perms, |mut file| {
-                    util::copy_wide(&mut blob, &mut file)?;
-                    Ok(())
-                })?;
-            }
+            Object::Blob(blob) => blob.persist(&path)?,
             Object::Tree(tree) => {
                 write_object(&path, 0o444, |mut file| {
                     serde_json::to_writer(&mut file, &tree)?;
@@ -225,11 +218,11 @@ impl Store for FsStore {
             Some(ObjectKind::Blob) => {
                 let file = std::fs::File::open(path)?;
                 let is_executable = file.metadata()?.mode() & 0o100 != 0;
-                Ok(Object::Blob(Blob {
-                    stream: Box::new(file),
+                Ok(Object::Blob(Blob::from_reader_raw(
+                    Box::new(file),
                     is_executable,
-                    object_id: id,
-                }))
+                    id,
+                )))
             }
             Some(ObjectKind::Tree) => {
                 let file = std::fs::File::open(path)?;

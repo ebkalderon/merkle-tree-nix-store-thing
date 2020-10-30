@@ -1,4 +1,8 @@
+use std::fs::Permissions;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::path::Path;
+
+use filetime::FileTime;
 
 #[derive(Debug)]
 enum Storage {
@@ -18,6 +22,25 @@ impl PagedBuffer {
             inner: Storage::Inline(Cursor::new(Vec::new())),
             threshold: t,
         }
+    }
+
+    pub fn persist(self, dest: &Path, perms: Permissions) -> anyhow::Result<()> {
+        match self.inner {
+            Storage::Inline(mut inner) => {
+                let mut temp = tempfile::NamedTempFile::new()?;
+                copy_wide(&mut inner, &mut temp)?;
+                temp.as_file_mut().set_permissions(perms)?;
+                filetime::set_file_mtime(temp.path(), FileTime::zero())?;
+                temp.persist(dest)?;
+            }
+            Storage::File(mut inner) => {
+                inner.as_file_mut().set_permissions(perms)?;
+                filetime::set_file_mtime(inner.path(), FileTime::zero())?;
+                inner.persist(dest)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -47,11 +70,10 @@ impl Write for PagedBuffer {
                     // TODO: Should we create this in a directory like `<store>/tmp` for security?
                     let mut file = tempfile::NamedTempFile::new()?;
                     copy_wide(inner, &mut file)?;
-                    file.as_file_mut().sync_data()?;
+                    file.flush()?;
 
                     let len = file.write(buf)?;
                     self.inner = Storage::File(file);
-
                     Ok(len)
                 } else {
                     inner.write(buf)
