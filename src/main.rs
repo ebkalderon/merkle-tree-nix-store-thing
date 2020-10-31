@@ -1,11 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use self::object::{Blob, Entry, Object, Package, Tree};
-use self::store::Store;
-
-mod object;
-mod store;
-mod util;
+use foo::store::Store;
+use foo::{store, Blob, Entry, Object, Package, Tree};
 
 fn main() -> anyhow::Result<()> {
     // let mut store = store::MemoryStore::default();
