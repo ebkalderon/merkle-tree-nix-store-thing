@@ -1,3 +1,5 @@
+//! Filesystem-backed store implementation.
+
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -12,6 +14,11 @@ use crate::object::{Blob, ContentAddressable, Entry, Object, ObjectId, ObjectKin
 const OBJECTS_SUBDIR: &str = "objects";
 const PACKAGES_SUBDIR: &str = "packages";
 
+/// A store implementation backed by the local filesystem.
+///
+/// It leverages hard linking to aggressively deduplicate files and save disk space. Unlike Nix,
+/// this file-level deduplication does not require scheduled optimization passes that "stop the
+/// world," but rather, it happens transparently each time new objects are inserted into the store.
 #[derive(Debug)]
 pub struct FsStore {
     objects_dir: PathBuf,
@@ -19,6 +26,9 @@ pub struct FsStore {
 }
 
 impl FsStore {
+    /// Opens the store on the directory located in `path`.
+    ///
+    /// Returns `Err` if the path does not exist or is not a valid store directory.
     pub fn open<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let base = path.into();
         let objects_dir = base.join(OBJECTS_SUBDIR);
@@ -36,6 +46,14 @@ impl FsStore {
         }
     }
 
+    /// Initializes a new store directory at `path` and opens it.
+    ///
+    /// If an empty target directory does not already exist at that location, it will be
+    /// automatically created. If a store directory already exists at that location, it will be
+    /// opened.
+    ///
+    /// Returns `Err` if `path` exists and does not point to a valid store directory, or if a new
+    /// store directory could not be created at `path` due to permissions or other I/O errors.
     pub fn init<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let base = path.into();
         let objects_dir = base.join(OBJECTS_SUBDIR);
@@ -50,6 +68,13 @@ impl FsStore {
         Self::open(base)
     }
 
+    /// Initializes a store inside the empty directory referred to by `path` and opens it.
+    ///
+    /// If a store directory already exists at that location, it will be opened.
+    ///
+    /// Returns `Err` if `path` exists and does not point to a valid store directory or an empty
+    /// directory, or the new store directory could not be initialized at `path` due to permissions
+    /// or I/O errors.
     pub fn init_bare<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let base = path.into();
         let objects_dir = base.join(OBJECTS_SUBDIR);
@@ -75,6 +100,7 @@ impl FsStore {
         if target_dir.exists() {
             Ok(())
         } else {
+            // Ensure all object references are present in the store before checkout.
             let missing_refs: BTreeSet<_> = pkg
                 .references
                 .iter()
@@ -85,9 +111,13 @@ impl FsStore {
 
             if missing_refs.is_empty() {
                 let tree = self.get_tree(pkg.tree)?;
+
+                // Serialize the tree to a temporary directory first. This way, if an error occurs,
+                // the `packages` directory will not be left in an inconsistent state.
                 let temp_dir = tempfile::tempdir()?;
                 self.write_tree(temp_dir.path(), tree)?;
 
+                // Atomically move the checked out package directory to its final location.
                 let finished_dir = temp_dir.into_path();
                 std::fs::rename(finished_dir, target_dir)?;
 
@@ -168,10 +198,12 @@ impl Store for FsStore {
             Ok(())
         }
 
+        // Prepare to serialize object into: `<store>/objects/ab/cdef01234567890.<kind>`
         let id = o.object_id();
         let mut path = self.objects_dir.join(id.to_path_buf());
-        let parent_dir = path.parent().expect("path cannot be at filesystem root");
 
+        // Create the two-character parent directory, if it doesn't already exist.
+        let parent_dir = path.parent().expect("path cannot be at filesystem root");
         if !parent_dir.exists() {
             std::fs::create_dir(parent_dir)?;
         }
@@ -202,6 +234,7 @@ impl Store for FsStore {
     fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Object> {
         let mut path = self.objects_dir.join(id.to_path_buf());
 
+        // Use `kind`, if specified, as a perf optimization to guess the file extension.
         let kind_exists = if kind.is_some() {
             kind.filter(|k| {
                 path.set_extension(k.as_str());
@@ -268,6 +301,7 @@ impl Store for FsStore {
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
         let mut path = self.objects_dir.join(id.to_path_buf());
 
+        // Use `kind`, if specified, as a perf optimization to guess the file extension.
         if let Some(k) = kind {
             path.set_extension(k.as_str());
             Ok(path.exists())

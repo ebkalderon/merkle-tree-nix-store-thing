@@ -1,5 +1,7 @@
+//! Utility functions and types.
+
 use std::fs::Permissions;
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use filetime::FileTime;
@@ -10,6 +12,7 @@ enum Storage {
     File(tempfile::NamedTempFile),
 }
 
+/// A buffer which spills over to disk once its length grows beyond a set threshold.
 #[derive(Debug)]
 pub struct PagedBuffer {
     inner: Storage,
@@ -17,6 +20,7 @@ pub struct PagedBuffer {
 }
 
 impl PagedBuffer {
+    /// Creates a new `PagedBuffer` with the given spillover threshold.
     pub fn with_threshold(t: usize) -> Self {
         PagedBuffer {
             inner: Storage::Inline(Cursor::new(Vec::new())),
@@ -24,6 +28,11 @@ impl PagedBuffer {
         }
     }
 
+    /// Persists the buffer to disk with as little redundant copying as possible.
+    ///
+    /// If the buffer is held in main memory, it is copied to a temporary file and atomically moved
+    /// to the final destination. If the buffer has already spilled over to disk, the already
+    /// existing temporary file is simply moved to the final destination, no extra copying needed.
     pub fn persist(self, dest: &Path, perms: Permissions) -> anyhow::Result<()> {
         match self.inner {
             Storage::Inline(mut inner) => {
@@ -45,7 +54,7 @@ impl PagedBuffer {
 }
 
 impl Read for PagedBuffer {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.inner {
             Storage::Inline(ref mut inner) => inner.read(buf),
             Storage::File(ref mut inner) => inner.read(buf),
@@ -54,7 +63,7 @@ impl Read for PagedBuffer {
 }
 
 impl Seek for PagedBuffer {
-    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         match self.inner {
             Storage::Inline(ref mut inner) => inner.seek(pos),
             Storage::File(ref mut inner) => inner.seek(pos),
@@ -63,7 +72,7 @@ impl Seek for PagedBuffer {
 }
 
 impl Write for PagedBuffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self.inner {
             Storage::Inline(ref mut inner) => {
                 if inner.get_ref().len() + buf.len() > self.threshold {
@@ -83,7 +92,7 @@ impl Write for PagedBuffer {
         }
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         match self.inner {
             Storage::Inline(ref mut inner) => inner.flush(),
             Storage::File(ref mut inner) => inner.flush(),
@@ -91,7 +100,11 @@ impl Write for PagedBuffer {
     }
 }
 
-pub fn copy_wide<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> std::io::Result<u64> {
+/// An faster implementation of `std::io::copy()` which uses a larger 64K buffer instead of 8K.
+///
+/// This larger buffer size leverages SIMD on x86_64 and other modern platforms for faster speeds.
+/// See this GitHub issue: https://github.com/rust-lang/rust/issues/49921
+pub fn copy_wide<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<u64> {
     let mut buffer = [0; 65536];
     let mut total = 0;
     loop {
@@ -101,7 +114,7 @@ pub fn copy_wide<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> std::io::
                 writer.write_all(&buffer[..n])?;
                 total += n as u64;
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         }
     }

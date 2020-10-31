@@ -1,3 +1,5 @@
+//! Object ID and associated helper types.
+
 use std::cmp::Ordering;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::io::Write;
@@ -7,10 +9,17 @@ use std::str::FromStr;
 use anyhow::Context;
 use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 
+/// A unique cryptographic hash representing an object (blob, tree, package).
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct ObjectId(blake3::Hash);
 
 impl ObjectId {
+    /// Computes the canonical filesystem path representation of the object ID.
+    ///
+    /// The parent directory is the first two characters of the hash, joined with the remainder of
+    /// the hash. An extension is commonly added to the end of the file name to distinguish the
+    /// object's type, but this is not required and depends on the backing representation of the
+    /// `Store` being used.
     pub fn to_path_buf(&self) -> PathBuf {
         let text = self.0.to_hex();
         Path::new(&text[0..2]).join(&text[2..])
@@ -70,29 +79,46 @@ impl Serialize for ObjectId {
     }
 }
 
+/// An incremental hasher that computes object IDs.
 #[derive(Debug, Default)]
 pub struct Hasher(blake3::Hasher);
 
 impl Hasher {
+    /// Constructs a new `Hasher` with a regular hash function.
     pub fn new() -> Self {
         Hasher(blake3::Hasher::new())
     }
 
+    /// Adds input bytes to the hash state. You can call this any number of times.
+    ///
+    /// This method is single threaded, and it is recommended to call it with a buffer of at least
+    /// 8 KiB (AVX2) to 16 KiB (AVX2 + AVX-512) in size for best performance.
     pub fn update(&mut self, bytes: &[u8]) -> &mut Self {
         self.0.update(bytes);
         self
     }
 
+    /// Adds input bytes to the hash state, but potentially using multi-threading. You can call this
+    /// any number of times.
+    ///
+    /// To get any performance benefit from multi-threading, the input buffer size needs to be very
+    /// large. As a rule of thumb on x86_64, there is no benefit to multi-threading inputs less
+    /// than 128 KiB.
     pub fn par_update(&mut self, bytes: &[u8]) -> &mut Self {
         self.0.update_with_join::<blake3::join::RayonJoin>(bytes);
         self
     }
 
+    /// Finalizes the hash state and returns the computed `ObjectId`.
     pub fn finish(&self) -> ObjectId {
         ObjectId(self.0.finalize())
     }
 }
 
+/// Wraps an I/O writer and hashes its contents, producing an `ObjectId`.
+///
+/// While writing, it is recommended to pass buffers of at least 8 KiB (AVX2) to 16 KiB (AVX2 +
+/// AVX-512) in size for best performance.
 #[derive(Debug)]
 pub struct HashWriter<W> {
     inner: W,
@@ -100,16 +126,19 @@ pub struct HashWriter<W> {
 }
 
 impl<W: Write> HashWriter<W> {
+    /// Creates a new `HashWriter<W>` with some header bytes prefixed to the hash input.
     pub fn with_header(header: &[u8], inner: W) -> Self {
         let mut hasher = Hasher::new();
         hasher.update(header);
         HashWriter { inner, hasher }
     }
 
+    /// Finalizes the hash state and returns the computed `ObjectId`.
     pub fn object_id(&self) -> ObjectId {
         self.hasher.finish()
     }
 
+    /// Unwraps this `HashWriter<W>`, returning the underlying buffer.
     pub fn into_inner(self) -> W {
         self.inner
     }

@@ -1,3 +1,5 @@
+//! In-memory store implementation intended for testing.
+
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
@@ -6,6 +8,11 @@ use anyhow::anyhow;
 use super::{Objects, Store};
 use crate::object::{Blob, ContentAddressable, Object, ObjectId, ObjectKind, Package, Tree};
 
+/// Private replacement for `Object` which implements `Clone`.
+///
+/// `Object` does not implement `Clone` because `Blob` contains non-cloneable fields. The method
+/// signature of `Store::get_object()` returns an owned `Object` value, so we define this cloneable
+/// type convertible to and from `Object` to compensate.
 #[derive(Clone, Debug)]
 enum Inline {
     Blob {
@@ -57,6 +64,7 @@ impl From<Inline> for Object {
     }
 }
 
+/// A store implementation kept in memory, useful for testing.
 #[derive(Debug, Default)]
 pub struct MemoryStore {
     objects: BTreeMap<ObjectId, Inline>,

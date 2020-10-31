@@ -1,3 +1,5 @@
+//! Types of objects that comprise the Merkle tree.
+
 pub use self::id::{HashWriter, Hasher, ObjectId};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,18 +23,27 @@ const BLOB_FILE_EXT: &str = "blob";
 const TREE_FILE_EXT: &str = "tree";
 const PACKAGE_FILE_EXT: &str = "pkg";
 
+/// A trait designating objects belonging to a `Store`.
+///
+/// These objects are nodes in a Merkle tree and can be stored and retrieved by their `ObjectId`.
 pub trait ContentAddressable {
+    /// Returns the unique cryptographic hash of the object.
     fn object_id(&self) -> ObjectId;
 }
 
+/// A list specifying all types of `Store` objects.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub enum ObjectKind {
+    /// Plain file or executable.
     Blob,
+    /// Filesystem directory possibly containing other `Blob` and `Tree` objects, one level deep.
     Tree,
+    /// Installed package with a name, platform, package references, and an output directory tree.
     Package,
 }
 
 impl ObjectKind {
+    /// Enumerates all variants of `ObjectKind`.
     pub fn iter() -> impl Iterator<Item = Self> {
         use std::iter::once;
         once(ObjectKind::Blob)
@@ -40,6 +51,9 @@ impl ObjectKind {
             .chain(once(ObjectKind::Package))
     }
 
+    /// Returns the string representation of the `ObjectKind`.
+    ///
+    /// This is commonly used as the file extension for objects in a filesystem-backed `Store`.
     pub const fn as_str(self) -> &'static str {
         match self {
             ObjectKind::Blob => BLOB_FILE_EXT,
@@ -62,14 +76,19 @@ impl FromStr for ObjectKind {
     }
 }
 
+/// A Merkle tree object belonging to a `Store`.
 #[derive(Debug)]
 pub enum Object {
+    /// Plain file or executable.
     Blob(Blob),
+    /// Filesystem directory possibly containing other `Blob` and `Tree` objects, one level deep.
     Tree(Tree),
+    /// Installed package with a name, platform, package references, and an output directory tree.
     Package(Package),
 }
 
 impl Object {
+    /// Returns the type of this object.
     pub fn kind(&self) -> ObjectKind {
         match *self {
             Object::Blob(_) => ObjectKind::Blob,
@@ -78,6 +97,9 @@ impl Object {
         }
     }
 
+    /// Attempts to consume this object and return a `Blob`.
+    ///
+    /// Returns `Err(self)` if this object is not actually a `Blob`.
     pub fn into_blob(self) -> Result<Blob, Self> {
         match self {
             Object::Blob(b) => Ok(b),
@@ -85,6 +107,9 @@ impl Object {
         }
     }
 
+    /// Attempts to consume this object and return a `Tree`.
+    ///
+    /// Returns `Err(self)` if this object is not actually a `Tree`.
     pub fn into_tree(self) -> Result<Tree, Self> {
         match self {
             Object::Tree(t) => Ok(t),
@@ -92,6 +117,9 @@ impl Object {
         }
     }
 
+    /// Attempts to consume this object and return a `Package`.
+    ///
+    /// Returns `Err(self)` if this object is not actually a `Package`.
     pub fn into_package(self) -> Result<Package, Self> {
         match self {
             Object::Package(o) => Ok(o),
@@ -110,6 +138,7 @@ impl ContentAddressable for Object {
     }
 }
 
+/// Underlying I/O streams that can back a blob object.
 enum Kind {
     Reader(Box<dyn Read>),
     Paged(PagedBuffer),
@@ -117,6 +146,13 @@ enum Kind {
     Mmap(Cursor<Mmap>),
 }
 
+/// Represents a blob object, i.e. a regular file or executable.
+///
+/// Unlike most files, though, blobs store no additional metadata nor attributes apart from the
+/// executable bit. Timestamps are fixed to January 1st, 1970 and extended attributes are removed.
+///
+/// TODO: Should we store the length as well? It would be useful for calculating the download size
+/// of closures and approximate the installed size of packages.
 pub struct Blob {
     stream: Kind,
     is_executable: bool,
@@ -124,6 +160,7 @@ pub struct Blob {
 }
 
 impl Blob {
+    /// Hashes and returns a new `Blob` object from the given buffer.
     pub fn from_vec(bytes: Vec<u8>, is_executable: bool) -> Self {
         let mut hasher = id::Hasher::new();
         hasher.update(blob_header(is_executable)).update(&bytes);
@@ -134,6 +171,17 @@ impl Blob {
         }
     }
 
+    /// Hashes and returns a new `Blob` object from the file located at `path`.
+    ///
+    /// This constructor is more efficent than passing `std::fs::File` into `Blob::from_reader()`.
+    /// It uses memory-mapping and multi-threaded hashing to rapidly process the file, falling back
+    /// to regular file I/O only if the file in question is too large to be memory-mapped.
+    ///
+    /// When interacting with files on the local filesystem, prefer using this constructor over
+    /// `Blob::from_reader()` whenever possible.
+    ///
+    /// Returns `Err` if `path` does not exist or does not refer to a file, the user does not have
+    /// permission to read the file, or another I/O error occurred.
     pub fn from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let mut file = std::fs::File::open(&path)?;
         let metadata = file.metadata()?;
@@ -141,6 +189,7 @@ impl Blob {
         let header = blob_header(is_executable);
 
         if metadata.len() < 16 * 1024 {
+            // Not worth it to mmap(2) small files. Load into memory instead.
             let buffer = Cursor::new(Vec::with_capacity(metadata.len() as usize));
             let mut writer = HashWriter::with_header(header, buffer);
             util::copy_wide(&mut file, &mut writer)?;
@@ -150,6 +199,7 @@ impl Blob {
                 is_executable,
             })
         } else if metadata.len() <= isize::max_value() as u64 {
+            // Prefer memory-mapping files wherever possible for performance.
             let mmap = unsafe { MmapOptions::new().len(metadata.len() as usize).map(&file)? };
             let mut hasher = id::Hasher::new();
             hasher.update(header).par_update(&mmap);
@@ -159,6 +209,7 @@ impl Blob {
                 is_executable,
             })
         } else {
+            // Only fall back to regular disk I/O if file is too large to mmap(2).
             let temp = tempfile::NamedTempFile::new()?;
             let mut writer = HashWriter::with_header(header, temp);
             util::copy_wide(&mut file, &mut writer)?;
@@ -170,6 +221,12 @@ impl Blob {
         }
     }
 
+    /// Hashes and returns a new `Blob` object from a reader.
+    ///
+    /// This will attempt to buffer the I/O stream into memory, spilling over into a temporary file
+    /// on disk if the internal buffer grows beyond a 32 MB threshold.
+    ///
+    /// Returns `Err` if an I/O error occurred.
     pub fn from_reader<R: Read>(mut reader: R, is_executable: bool) -> anyhow::Result<Self> {
         let header = blob_header(is_executable);
         let paged_writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
@@ -183,6 +240,7 @@ impl Blob {
         })
     }
 
+    /// Constructs a new `Blob` from a reader and `ObjectId` without verifying the hash.
     pub(crate) fn from_reader_raw(
         reader: Box<dyn Read>,
         is_executable: bool,
@@ -195,10 +253,12 @@ impl Blob {
         }
     }
 
+    /// Returns `true` if this blob has its executable bit set.
     pub fn is_executable(&self) -> bool {
         self.is_executable
     }
 
+    /// Persists the blob to disk with as little redundant copying as possible.
     pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
         if !dest.exists() {
             let mode = if self.is_executable { 0o544 } else { 0o444 };
@@ -221,6 +281,7 @@ impl Blob {
                     inner.persist(dest)?;
                 }
                 Kind::Mmap(inner) => {
+                    // Use buffered I/O here because mmap-ed files may be larger in size.
                     let mut temp = tempfile::NamedTempFile::new()?;
                     let mut writer = std::io::BufWriter::with_capacity(64 * 1024, &mut temp);
                     writer.write_all(inner.get_ref())?;
@@ -273,6 +334,7 @@ const fn blob_header(is_executable: bool) -> &'static [u8] {
     }
 }
 
+/// A list of possible entries inside of a directory tree.
 #[derive(Clone, Debug, Hash, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum Entry {
@@ -281,12 +343,17 @@ pub enum Entry {
     Symlink { target: PathBuf },
 }
 
+/// Represents a directory tree object.
+///
+/// Tree objects are only one level deep and may contain other trees, blobs, and symlinks.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Tree {
+    /// File names mapped to directory entries in the tree.
     pub entries: BTreeMap<String, Entry>,
 }
 
 impl Tree {
+    /// Iterates over all object IDs that this tree object references.
     pub fn references(&self) -> impl Iterator<Item = (ObjectId, ObjectKind)> + '_ {
         self.entries.values().filter_map(|entry| match entry {
             Entry::Tree { id } => Some((*id, ObjectKind::Tree)),
@@ -305,9 +372,17 @@ impl ContentAddressable for Tree {
     }
 }
 
+/// The installed name for a package, which is the human-readable name for the package concatenated
+/// with its tree object ID and separated by a hyphen.
+///
+/// Executables and scripts inside a package directory may reference other installed packages on
+/// the system by absolute path, e.g. `<store>/packages/<name>-<id>/foo/bar.sh`, or by relative
+/// path, as in `../<name>-<id>/foo/bar.sh`.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct InstallName {
+    /// The human-readable name of the package.
     pub name: SmolStr,
+    /// Unique hash of the `Package` object it derives from.
     pub id: ObjectId,
 }
 
@@ -317,15 +392,26 @@ impl Display for InstallName {
     }
 }
 
+/// Represents a package object.
+///
+/// Package objects have an output directory tree and may reference other packages at run-time or
+/// at build-time.
+///
+/// TODO: Need to handle builders, build-time dependencies, and hash rewriting.
 #[derive(Clone, Debug, Hash, Deserialize, Serialize)]
 pub struct Package {
+    /// The human-readable name.
     pub name: SmolStr,
+    /// The target platform spec it supports.
     pub system: String,
+    /// Any other packages it references at run-time.
     pub references: BTreeSet<ObjectId>,
+    /// Output directory tree to be installed.
     pub tree: ObjectId,
 }
 
 impl Package {
+    /// Computes the directory name where the package should be installed.
     pub fn install_name(&self) -> InstallName {
         InstallName {
             name: self.name.clone(),
