@@ -14,6 +14,15 @@ use crate::object::{Blob, Object, ObjectId, ObjectKind, Package, Tree};
 mod fs;
 mod mem;
 
+/// A filesystem closure for one or more packages.
+///
+/// Closures describe the complete reference graph for a package or set of packages. References
+/// might include individual files (blobs), directory trees, and other packages that the root
+/// requires at run-time or at build-time. Closures are represented as a flat topologically-sorted
+/// list of unique object IDs to enable efficient delta calculation between any two individual
+/// stores.
+pub type Closure = Vec<(ObjectId, ObjectKind)>;
+
 /// An iterator of tree objects in a store.
 ///
 /// The order in which this iterator returns entries is platform and filesystem dependent.
@@ -91,16 +100,10 @@ pub trait Store {
 
     /// Computes the filesystem closure for the given packages.
     ///
-    /// Closures describe the complete reference graph for a package or set of packages. References
-    /// might include individual files (blobs), directory trees, and other packages that the root
-    /// requires at run-time or at build-time. Closures are represented as a flat
-    /// topologically-sorted list of unique object IDs to enable efficient delta calculation
-    /// between any two individual stores.
-    ///
     /// Returns `Err` if any of the given object IDs do not exist, any of the object IDs do not
     /// refer to a `Package` object, a cycle or structural inconsistency is detected in the
     /// reference graph, or an I/O error occurred.
-    fn closure_for(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Vec<(ObjectId, ObjectKind)>> {
+    fn compute_closure(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
         // Use newtype because Rust disallows deriving/implementing these traits for tuples.
         #[derive(Clone, Copy, Eq, Hash, PartialEq, PartialOrd, Ord)]
         struct Ref(ObjectId, ObjectKind);

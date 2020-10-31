@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
 
     println!(
         "closure for 'foo' and 'bar': {:?}",
-        store.closure_for({
+        store.compute_closure({
             let mut pkgs = BTreeSet::new();
             pkgs.insert(pkg_id);
             pkgs.insert(pkg_id2);
