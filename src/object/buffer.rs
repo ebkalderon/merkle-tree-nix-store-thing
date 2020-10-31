@@ -1,4 +1,4 @@
-//! Utility functions and types.
+//! Hybrid memory and disk backed buffer type.
 
 use std::fs::Permissions;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
@@ -37,7 +37,7 @@ impl PagedBuffer {
         match self.inner {
             Storage::Inline(mut inner) => {
                 let mut temp = tempfile::NamedTempFile::new()?;
-                copy_wide(&mut inner, &mut temp)?;
+                crate::copy_wide(&mut inner, &mut temp)?;
                 temp.as_file_mut().set_permissions(perms)?;
                 filetime::set_file_mtime(temp.path(), FileTime::zero())?;
                 temp.persist(dest)?;
@@ -78,7 +78,7 @@ impl Write for PagedBuffer {
                 if inner.get_ref().len() + buf.len() > self.threshold {
                     // TODO: Should we create this in a directory like `<store>/tmp` for security?
                     let mut file = tempfile::NamedTempFile::new()?;
-                    copy_wide(inner, &mut file)?;
+                    crate::copy_wide(inner, &mut file)?;
                     file.flush()?;
 
                     let len = file.write(buf)?;
@@ -96,26 +96,6 @@ impl Write for PagedBuffer {
         match self.inner {
             Storage::Inline(ref mut inner) => inner.flush(),
             Storage::File(ref mut inner) => inner.flush(),
-        }
-    }
-}
-
-/// An faster implementation of `std::io::copy()` which uses a larger 64K buffer instead of 8K.
-///
-/// This larger buffer size leverages SIMD on x86_64 and other modern platforms for faster speeds.
-/// See this GitHub issue: https://github.com/rust-lang/rust/issues/49921
-pub fn copy_wide<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<u64> {
-    let mut buffer = [0; 65536];
-    let mut total = 0;
-    loop {
-        match reader.read(&mut buffer) {
-            Ok(0) => return Ok(total),
-            Ok(n) => {
-                writer.write_all(&buffer[..n])?;
-                total += n as u64;
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
         }
     }
 }

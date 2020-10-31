@@ -15,8 +15,9 @@ use memmap::{Mmap, MmapOptions};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::util::{self, PagedBuffer};
+use self::buffer::PagedBuffer;
 
+mod buffer;
 mod id;
 
 const BLOB_FILE_EXT: &str = "blob";
@@ -192,7 +193,7 @@ impl Blob {
             // Not worth it to mmap(2) small files. Load into memory instead.
             let buffer = Cursor::new(Vec::with_capacity(metadata.len() as usize));
             let mut writer = HashWriter::with_header(header, buffer);
-            util::copy_wide(&mut file, &mut writer)?;
+            crate::copy_wide(&mut file, &mut writer)?;
             Ok(Blob {
                 object_id: writer.object_id(),
                 stream: Kind::Reader(Box::new(writer.into_inner())),
@@ -212,7 +213,7 @@ impl Blob {
             // Only fall back to regular disk I/O if file is too large to mmap(2).
             let temp = tempfile::NamedTempFile::new()?;
             let mut writer = HashWriter::with_header(header, temp);
-            util::copy_wide(&mut file, &mut writer)?;
+            crate::copy_wide(&mut file, &mut writer)?;
             Ok(Blob {
                 object_id: writer.object_id(),
                 stream: Kind::File(writer.into_inner()),
@@ -231,7 +232,7 @@ impl Blob {
         let header = blob_header(is_executable);
         let paged_writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
         let mut writer = HashWriter::with_header(header, paged_writer);
-        util::copy_wide(&mut reader, &mut writer)?;
+        crate::copy_wide(&mut reader, &mut writer)?;
 
         Ok(Blob {
             object_id: writer.object_id(),
@@ -267,7 +268,7 @@ impl Blob {
             match self.stream {
                 Kind::Reader(mut inner) => {
                     let mut temp = tempfile::NamedTempFile::new()?;
-                    util::copy_wide(&mut inner, &mut temp)?;
+                    crate::copy_wide(&mut inner, &mut temp)?;
 
                     temp.as_file_mut().set_permissions(perms)?;
                     filetime::set_file_mtime(temp.path(), FileTime::zero())?;
