@@ -250,10 +250,13 @@ impl Store for FsStore {
         match kind_exists {
             Some(ObjectKind::Blob) => {
                 let file = std::fs::File::open(path)?;
-                let is_executable = file.metadata()?.mode() & 0o100 != 0;
+                let metadata = file.metadata()?;
+                let length = metadata.len();
+                let is_executable = metadata.mode() & 0o100 != 0;
                 Ok(Object::Blob(Blob::from_reader_raw(
                     Box::new(file),
                     is_executable,
+                    length,
                     id,
                 )))
             }

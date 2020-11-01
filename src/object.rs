@@ -149,14 +149,13 @@ enum Kind {
 
 /// Represents a blob object, i.e. a regular file or executable.
 ///
-/// Unlike most files, though, blobs store no additional metadata nor attributes apart from the
-/// executable bit. Timestamps are fixed to January 1st, 1970 and extended attributes are removed.
-///
-/// TODO: Should we store the length as well? It would be useful for calculating the download size
-/// of closures and approximate the installed size of packages.
+/// Unlike most files, though, blobs store no additional metadata apart from the executable bit and
+/// the size on disk, in bytes. Timestamps are fixed to January 1st, 1970 and all extended
+/// attributes are removed.
 pub struct Blob {
     stream: Kind,
     is_executable: bool,
+    length: u64,
     object_id: ObjectId,
 }
 
@@ -166,9 +165,10 @@ impl Blob {
         let mut hasher = id::Hasher::new();
         hasher.update(blob_header(is_executable)).update(&bytes);
         Blob {
-            object_id: hasher.finish(),
+            length: bytes.len() as u64,
             stream: Kind::Reader(Box::new(Cursor::new(bytes))),
             is_executable,
+            object_id: hasher.finish(),
         }
     }
 
@@ -193,11 +193,12 @@ impl Blob {
             // Not worth it to mmap(2) small files. Load into memory instead.
             let buffer = Cursor::new(Vec::with_capacity(metadata.len() as usize));
             let mut writer = HashWriter::with_header(header, buffer);
-            crate::copy_wide(&mut file, &mut writer)?;
+            let length = crate::copy_wide(&mut file, &mut writer)?;
             Ok(Blob {
                 object_id: writer.object_id(),
                 stream: Kind::Reader(Box::new(writer.into_inner())),
                 is_executable,
+                length,
             })
         } else if metadata.len() <= isize::max_value() as u64 {
             // Prefer memory-mapping files wherever possible for performance.
@@ -205,19 +206,21 @@ impl Blob {
             let mut hasher = id::Hasher::new();
             hasher.update(header).par_update(&mmap);
             Ok(Blob {
-                object_id: hasher.finish(),
                 stream: Kind::Mmap(Cursor::new(mmap)),
                 is_executable,
+                length: metadata.len(),
+                object_id: hasher.finish(),
             })
         } else {
             // Only fall back to regular disk I/O if file is too large to mmap(2).
             let temp = tempfile::NamedTempFile::new()?;
             let mut writer = HashWriter::with_header(header, temp);
-            crate::copy_wide(&mut file, &mut writer)?;
+            let length = crate::copy_wide(&mut file, &mut writer)?;
             Ok(Blob {
                 object_id: writer.object_id(),
                 stream: Kind::File(writer.into_inner()),
                 is_executable,
+                length,
             })
         }
     }
@@ -232,12 +235,13 @@ impl Blob {
         let header = blob_header(is_executable);
         let paged_writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
         let mut writer = HashWriter::with_header(header, paged_writer);
-        crate::copy_wide(&mut reader, &mut writer)?;
+        let length = crate::copy_wide(&mut reader, &mut writer)?;
 
         Ok(Blob {
             object_id: writer.object_id(),
             stream: Kind::Paged(writer.into_inner()),
             is_executable,
+            length,
         })
     }
 
@@ -245,18 +249,25 @@ impl Blob {
     pub(crate) fn from_reader_raw(
         reader: Box<dyn Read>,
         is_executable: bool,
+        length: u64,
         object_id: ObjectId,
     ) -> Self {
         Blob {
-            object_id,
             stream: Kind::Reader(reader),
             is_executable,
+            length,
+            object_id,
         }
     }
 
     /// Returns `true` if this blob has its executable bit set.
     pub fn is_executable(&self) -> bool {
         self.is_executable
+    }
+
+    /// Returns the size of the blob, in bytes.
+    pub fn len(&self) -> u64 {
+        self.length
     }
 
     /// Persists the blob to disk with as little redundant copying as possible.
