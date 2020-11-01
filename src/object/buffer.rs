@@ -1,15 +1,28 @@
 //! Hybrid memory and disk backed buffer type.
 
+use std::fmt::{self, Debug, Formatter};
 use std::fs::Permissions;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use filetime::FileTime;
 
-#[derive(Debug)]
 enum Storage {
     Inline(Cursor<Vec<u8>>),
     File(tempfile::NamedTempFile),
+}
+
+impl Debug for Storage {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match *self {
+            Storage::Inline(ref cur) => f
+                .debug_struct("Inline")
+                .field("inner", cur.get_ref())
+                .field("pos", &cur.position())
+                .finish(),
+            Storage::File(ref file) => f.debug_tuple("File").field(file).finish(),
+        }
+    }
 }
 
 /// A buffer which spills over to disk once its length grows beyond a set threshold.

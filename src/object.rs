@@ -149,11 +149,31 @@ enum Kind {
     Mmap(Cursor<Mmap>),
 }
 
+impl Debug for Kind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        #[derive(Debug)]
+        enum DebugKind<'a> {
+            Reader,
+            Paged(&'a dyn Debug),
+            File(&'a dyn Debug),
+            Mmap(&'a dyn Debug),
+        }
+
+        match *self {
+            Kind::Reader(_) => DebugKind::Reader.fmt(f),
+            Kind::Paged(ref buf) => DebugKind::Paged(buf).fmt(f),
+            Kind::File(ref file) => DebugKind::File(file).fmt(f),
+            Kind::Mmap(ref mmap) => DebugKind::Mmap(mmap).fmt(f),
+        }
+    }
+}
+
 /// Represents a blob object, i.e. a regular file or executable.
 ///
 /// Unlike most files, though, blobs store no additional metadata apart from the executable bit and
 /// the size on disk, in bytes. Timestamps are fixed to January 1st, 1970 and all extended
 /// attributes are removed.
+#[derive(Debug)]
 pub struct Blob {
     stream: Kind,
     is_executable: bool,
@@ -317,15 +337,6 @@ impl Blob {
 impl ContentAddressable for Blob {
     fn object_id(&self) -> ObjectId {
         self.object_id
-    }
-}
-
-impl Debug for Blob {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.debug_struct(stringify!(Blob))
-            .field("is_executable", &self.is_executable)
-            .field("object_id", &self.object_id)
-            .finish()
     }
 }
 
