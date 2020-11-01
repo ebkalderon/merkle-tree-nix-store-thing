@@ -17,6 +17,8 @@ use smol_str::SmolStr;
 
 use self::buffer::PagedBuffer;
 
+pub mod pack;
+
 mod buffer;
 mod id;
 
@@ -347,7 +349,7 @@ const fn blob_header(is_executable: bool) -> &'static [u8] {
 }
 
 /// A list of possible entries inside of a directory tree.
-#[derive(Clone, Debug, Hash, Deserialize, Serialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum Entry {
     Tree { id: ObjectId },

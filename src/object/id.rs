@@ -14,6 +14,19 @@ use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 pub struct ObjectId(blake3::Hash);
 
 impl ObjectId {
+    /// The number of bytes in an `ObjectId` hash.
+    pub const LENGTH: usize = blake3::OUT_LEN;
+
+    /// Creates a new `ObjectId` from a raw byte array.
+    pub fn from_bytes(bytes: [u8; Self::LENGTH]) -> Self {
+        ObjectId(bytes.into())
+    }
+
+    /// Returns the raw byte representation of the object ID.
+    pub fn as_bytes(&self) -> &[u8; Self::LENGTH] {
+        self.0.as_bytes()
+    }
+
     /// Computes the canonical filesystem path representation of the object ID.
     ///
     /// The parent directory is the first two characters of the hash, joined with the remainder of
@@ -35,6 +48,12 @@ impl Debug for ObjectId {
 impl Display for ObjectId {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", self.0.to_hex())
+    }
+}
+
+impl From<[u8; ObjectId::LENGTH]> for ObjectId {
+    fn from(arr: [u8; ObjectId::LENGTH]) -> Self {
+        ObjectId(arr.into())
     }
 }
 
