@@ -67,7 +67,7 @@ impl From<Inline> for Object {
                 object_id,
             )),
             Inline::Tree(t) => Object::Tree(t),
-            Inline::Package(p) => Self::Package(p),
+            Inline::Package(p) => Object::Package(p),
         }
     }
 }
