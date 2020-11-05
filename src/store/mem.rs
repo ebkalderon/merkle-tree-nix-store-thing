@@ -1,7 +1,7 @@
 //! In-memory store implementation intended for testing.
 
 use std::collections::BTreeMap;
-use std::io::Cursor;
+use std::io::Read;
 
 use anyhow::anyhow;
 
@@ -16,9 +16,8 @@ use crate::object::{Blob, ContentAddressable, Object, ObjectId, ObjectKind, Pack
 #[derive(Clone, Debug)]
 enum Inline {
     Blob {
-        stream: Box<Cursor<Vec<u8>>>,
+        stream: Vec<u8>,
         is_executable: bool,
-        length: u64,
         object_id: ObjectId,
     },
     Tree(Tree),
@@ -29,12 +28,11 @@ impl Inline {
     fn from_object(o: Object) -> anyhow::Result<Self> {
         match o {
             Object::Blob(mut b) => {
-                let mut stream = Box::new(std::io::Cursor::new(Vec::new()));
-                let length = std::io::copy(&mut b, &mut stream)?;
+                let mut stream = Vec::with_capacity(b.len() as usize);
+                b.read_to_end(&mut stream)?;
                 Ok(Inline::Blob {
                     stream,
                     is_executable: b.is_executable(),
-                    length,
                     object_id: b.object_id(),
                 })
             }
@@ -58,14 +56,8 @@ impl From<Inline> for Object {
             Inline::Blob {
                 stream,
                 is_executable,
-                length,
                 object_id,
-            } => Object::Blob(Blob::from_reader_raw(
-                stream,
-                is_executable,
-                length,
-                object_id,
-            )),
+            } => Object::Blob(Blob::from_vec_unchecked(stream, is_executable, object_id)),
             Inline::Tree(t) => Object::Tree(t),
             Inline::Package(p) => Object::Package(p),
         }

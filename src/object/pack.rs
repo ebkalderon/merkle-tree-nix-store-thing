@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 
 use anyhow::anyhow;
 
-use super::{Blob, ContentAddressable, Object, ObjectId, PagedBuffer};
+use super::{Blob, ContentAddressable, Object, ObjectId};
 
 const MAGIC_VALUE: &[u8] = b"store-pack";
 const FORMAT_VERSION: u8 = 1;
@@ -158,15 +158,10 @@ impl<R: Read> PackReader<R> {
         let (object_id, kind, len) = parse_header(header)?;
         match kind {
             ObjectKind::Blob | ObjectKind::Exec => {
-                let mut reader = (&mut self.inner).take(len);
-                let mut buffer = PagedBuffer::with_threshold(32 * 1024 * 1024);
-                crate::copy_wide(&mut reader, &mut buffer)?;
-                Ok(Some(Object::Blob(Blob::from_reader_raw(
-                    Box::new(buffer),
-                    kind == ObjectKind::Exec,
-                    len,
-                    object_id,
-                ))))
+                let reader = (&mut self.inner).take(len);
+                let is_executable = kind == ObjectKind::Exec;
+                let blob = Blob::from_reader_unchecked(reader, is_executable, object_id)?;
+                Ok(Some(Object::Blob(blob)))
             }
             ObjectKind::Tree => {
                 let mut buffer = vec![0u8; len as usize].into_boxed_slice();
@@ -204,8 +199,8 @@ mod tests {
     const PACKAGE_SYSTEM: &str = "x86_64-linux-gnu";
 
     fn example_objects() -> Vec<Object> {
-        let first = Object::Blob(Blob::from_vec(b"hello".to_vec(), false));
-        let second = Object::Blob(Blob::from_vec(b"hola".to_vec(), true));
+        let first = Object::Blob(Blob::from_bytes(b"hello".to_vec(), false));
+        let second = Object::Blob(Blob::from_bytes(b"hola".to_vec(), true));
         let third = Object::Tree({
             let mut entries = BTreeMap::new();
             entries.insert(

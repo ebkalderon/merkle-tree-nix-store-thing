@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
@@ -248,18 +248,7 @@ impl Store for FsStore {
         };
 
         match kind_exists {
-            Some(ObjectKind::Blob) => {
-                let file = std::fs::File::open(path)?;
-                let metadata = file.metadata()?;
-                let length = metadata.len();
-                let is_executable = metadata.mode() & 0o100 != 0;
-                Ok(Object::Blob(Blob::from_reader_raw(
-                    Box::new(file),
-                    is_executable,
-                    length,
-                    id,
-                )))
-            }
+            Some(ObjectKind::Blob) => Blob::from_path_unchecked(&path, id).map(Object::Blob),
             Some(ObjectKind::Tree) => {
                 let file = std::fs::File::open(path)?;
                 let tree = serde_json::from_reader(file)?;
