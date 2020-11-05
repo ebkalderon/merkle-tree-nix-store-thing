@@ -57,7 +57,7 @@ impl From<Inline> for Object {
                 stream,
                 is_executable,
                 object_id,
-            } => Object::Blob(Blob::from_vec_unchecked(stream, is_executable, object_id)),
+            } => Object::Blob(Blob::from_bytes_unchecked(stream, is_executable, object_id)),
             Inline::Tree(t) => Object::Tree(t),
             Inline::Package(p) => Object::Package(p),
         }

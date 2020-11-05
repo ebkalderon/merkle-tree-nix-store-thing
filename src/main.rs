@@ -11,11 +11,14 @@ fn main() -> anyhow::Result<()> {
         std::io::Cursor::new(b"foobarbaz".to_vec()),
         false,
     )?))?;
-    let rs_id = store.insert_object(Object::Blob(Blob::from_vec(
+    let rs_id = store.insert_object(Object::Blob(Blob::from_bytes(
         b"fn main() {}".to_vec(),
         false,
     )))?;
-    let sh_id = store.insert_object(Object::Blob(Blob::from_vec(b"echo \"hi\"".to_vec(), true)))?;
+    let sh_id = store.insert_object(Object::Blob(Blob::from_bytes(
+        b"echo \"hi\"".to_vec(),
+        true,
+    )))?;
 
     let sub_tree_id = store.insert_object(Object::Tree({
         let mut entries = BTreeMap::new();

@@ -166,26 +166,26 @@ pub struct Blob {
 
 impl Blob {
     /// Hashes and returns a new `Blob` object from the given buffer.
-    pub fn from_vec(bytes: Vec<u8>, is_executable: bool) -> Self {
+    pub fn from_bytes(input: Vec<u8>, is_executable: bool) -> Self {
         let mut hasher = id::Hasher::new();
-        hasher.update(blob_header(is_executable)).update(&bytes);
+        hasher.update(blob_header(is_executable)).update(&input);
         Blob {
-            length: bytes.len() as u64,
-            stream: Kind::Inline(Cursor::new(bytes)),
+            length: input.len() as u64,
+            stream: Kind::Inline(Cursor::new(input)),
             is_executable,
             object_id: hasher.finish(),
         }
     }
 
     /// Constructs a new `Blob` without hashing it, trusting the `object_id` to be correct.
-    pub(crate) fn from_vec_unchecked(
-        bytes: Vec<u8>,
+    pub(crate) fn from_bytes_unchecked(
+        input: Vec<u8>,
         is_executable: bool,
         object_id: ObjectId,
     ) -> Self {
         Blob {
-            length: bytes.len() as u64,
-            stream: Kind::Inline(Cursor::new(bytes)),
+            length: input.len() as u64,
+            stream: Kind::Inline(Cursor::new(input)),
             is_executable,
             object_id,
         }
