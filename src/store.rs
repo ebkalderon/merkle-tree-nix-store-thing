@@ -1,35 +1,28 @@
 //! Store interface and provided implementations.
 
-pub use self::fs::FsStore;
-pub use self::mem::MemoryStore;
-
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
+use std::path::PathBuf;
 
 use anyhow::anyhow;
 
-use crate::object::{Blob, Object, ObjectId, ObjectKind, Package, Tree};
+use self::fs::Filesystem;
+use self::mem::Memory;
+use crate::closure::{compute_closure, compute_delta_closure, GraphPath};
+use crate::remote::Remote;
+use crate::{Blob, Closure, Object, ObjectId, ObjectKind, Objects, Package, Tree};
 
 mod fs;
 mod mem;
 
-/// A filesystem closure for one or more packages.
-///
-/// Closures describe the complete reference graph for a package or set of packages. References
-/// might include individual files (blobs), directory trees, and other packages that the root
-/// requires at run-time or at build-time. Closures are represented as a flat topologically-sorted
-/// list of unique object IDs to enable efficient delta calculation between any two individual
-/// stores.
-pub type Closure = Vec<(ObjectId, ObjectKind)>;
-
-/// An iterator of tree objects in a store.
+/// An iterator of tree object entries in a store.
 ///
 /// The order in which this iterator returns entries is platform and filesystem dependent.
-pub type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, ObjectKind)>> + 'a>;
+pub type Iter<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, ObjectKind)>> + 'a>;
 
-/// A content-addressable store of installed software packages.
-pub trait Store {
+/// A backend to the content-addressable store.
+pub trait Backend {
     /// Inserts a tree object into the store, returning its unique ID.
     ///
     /// Implementers _should_ take care to memoize this method such that if the object already
@@ -52,7 +45,7 @@ pub trait Store {
     /// The order in which this iterator returns entries is platform and filesystem dependent.
     ///
     /// Returns `Err` if the store is corrupt or an I/O error occurred.
-    fn iter_objects(&self) -> anyhow::Result<Objects<'_>>;
+    fn iter_objects(&self) -> anyhow::Result<Iter<'_>>;
 
     /// Returns `Ok(true)` if the store contains a tree object with the given unique ID, or
     /// `Ok(false)` otherwise.
@@ -97,23 +90,140 @@ pub trait Store {
                     .map_err(|_| anyhow!("{} is not a package object", id))
             })
     }
+}
+
+/// A content-addressable store of installed software packages.
+#[derive(Debug)]
+pub struct Store<B: Backend = Filesystem> {
+    backend: B,
+}
+
+impl Store<Filesystem> {
+    /// Opens the store on the directory located in `path`.
+    ///
+    /// Returns `Err` if the path does not exist or is not a valid store directory.
+    #[inline]
+    pub fn open<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
+        let backend = Filesystem::open(path.into())?;
+        Ok(Store::with_backend(backend))
+    }
+
+    /// Initializes a new store directory at `path` and opens it.
+    ///
+    /// If an empty target directory does not already exist at that location, it will be
+    /// automatically created. If a store directory already exists at that location, it will be
+    /// opened.
+    ///
+    /// Returns `Err` if `path` exists and does not point to a valid store directory, or if a new
+    /// store directory could not be created at `path` due to permissions or other I/O errors.
+    #[inline]
+    pub fn init<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
+        let backend = Filesystem::init(path.into())?;
+        Ok(Store::with_backend(backend))
+    }
+
+    /// Initializes a store inside the empty directory referred to by `path` and opens it.
+    ///
+    /// If a store directory already exists at that location, it will be opened.
+    ///
+    /// Returns `Err` if `path` exists and does not point to a valid store directory or an empty
+    /// directory, or the new store directory could not be initialized at `path` due to permissions
+    /// or I/O errors.
+    #[inline]
+    pub fn init_bare<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
+        let backend = Filesystem::init_bare(path.into())?;
+        Ok(Store::with_backend(backend))
+    }
+}
+
+impl Store<Memory> {
+    /// Constructs a new in-memory store. This is useful for testing.
+    #[inline]
+    pub fn in_memory() -> Self {
+        Store::with_backend(Memory::default())
+    }
+}
+
+impl<B: Backend> Store<B> {
+    fn with_backend(backend: B) -> Self {
+        Store { backend }
+    }
+
+    /// Inserts a tree object into the store, returning its unique ID.
+    ///
+    /// Returns `Err` if the object could not be inserted into the store or an I/O error occurred.
+    #[inline]
+    pub fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
+        self.backend.insert_object(o)
+    }
+
+    /// Looks up a specific tree object in the store and retrieves it, if it exists.
+    ///
+    /// If the type of the requested object is known up-front, implementers _can_ use this detail
+    /// to locate and retrieve the object faster. Otherwise, callers can specify `None` and the
+    /// store will attempt to guess the desired object type, if it is not immediately known.
+    ///
+    /// Returns `Err` if the object does not exist or an I/O error occurred.
+    #[inline]
+    pub fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Object> {
+        self.backend.get_object(id, kind)
+    }
+
+    /// Returns an iterator over all tree objects in this store.
+    ///
+    /// The order in which this iterator returns entries is platform and filesystem dependent.
+    ///
+    /// Returns `Err` if the store is corrupt or an I/O error occurred.
+    #[inline]
+    pub fn iter_objects(&self) -> anyhow::Result<Iter<'_>> {
+        self.backend.iter_objects()
+    }
+
+    /// Returns `Ok(true)` if the store contains a tree object with the given unique ID, or
+    /// `Ok(false)` otherwise.
+    ///
+    /// If the type of the requested object is known up-front, implementers _can_ use this detail
+    /// to locate and retrieve the object faster. Otherwise, callers can specify `None` and the
+    /// store will attempt to guess the desired object type, if it is not immediately known.
+    ///
+    /// Returns `Err` if the store is corrupt or an I/O error occurred.
+    #[inline]
+    pub fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
+        self.backend.contains_object(id, kind)
+    }
+
+    /// Looks up a `Blob` object with the given ID and retrieves it, if it exists.
+    ///
+    /// Returns `Err` if the object does not exist, the given ID does not refer to a `Blob` object,
+    /// or an I/O error occurred.
+    pub fn get_blob(&self, id: ObjectId) -> anyhow::Result<Blob> {
+        self.backend.get_blob(id)
+    }
+
+    /// Looks up a `Tree` object with the given ID and retrieves it, if it exists.
+    ///
+    /// Returns `Err` if the object does not exist, the given ID does not refer to a `Tree` object,
+    /// or an I/O error occurred.
+    #[inline]
+    pub fn get_tree(&self, id: ObjectId) -> anyhow::Result<Tree> {
+        self.backend.get_tree(id)
+    }
+
+    /// Looks up a `Package` object with the given ID and retrieves it, if it exists.
+    ///
+    /// Returns `Err` if the object does not exist, the given ID does not refer to a `Package`
+    /// object, or an I/O error occurred.
+    #[inline]
+    pub fn get_package(&self, id: ObjectId) -> anyhow::Result<Package> {
+        self.backend.get_package(id)
+    }
 
     /// Computes the filesystem closure for the given packages.
     ///
     /// Returns `Err` if any of the given object IDs do not exist, any of the object IDs do not
     /// refer to a `Package` object, a cycle or structural inconsistency is detected in the
     /// reference graph, or an I/O error occurred.
-    fn compute_closure(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
-        // Use newtype because Rust disallows deriving/implementing these traits for tuples.
-        #[derive(Clone, Copy, Eq, Hash, PartialEq, PartialOrd, Ord)]
-        struct Ref(ObjectId, ObjectKind);
-
-        impl Display for Ref {
-            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                Display::fmt(&self.0, f)
-            }
-        }
-
+    pub fn compute_closure(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
         let refs = pkgs
             .into_iter()
             .map(|id| Ref(id, ObjectKind::Package))
@@ -147,29 +257,22 @@ pub trait Store {
     /// Returns `Err` if any of the given object IDs do not exist in this store, any of the object
     /// IDs do not refer to a `Package` object, a cycle or structural inconsistency is detected in
     /// the reference graph, or an I/O error occurred.
-    fn compute_delta(&self, pkgs: BTreeSet<ObjectId>, dest: &dyn Store) -> anyhow::Result<Closure> {
-        // This delta computation technique is shamelessly stolen from Git, as documented
+    pub fn compute_delta<R>(&self, pkgs: BTreeSet<ObjectId>, dest: &R) -> anyhow::Result<Closure>
+    where
+        R: Remote + ?Sized,
+    {
+        // This delta computation technique was shamelessly stolen from Git, as documented
         // meticulously in these two pages:
         //
         // https://matthew-brett.github.io/curious-git/git_push_algorithm.html
         // https://github.com/git/git/blob/master/Documentation/technical/pack-protocol.txt
 
-        // Use newtype because Rust disallows deriving/implementing these traits for tuples.
-        #[derive(Clone, Copy, Eq, Hash, PartialEq, PartialOrd, Ord)]
-        struct Ref(ObjectId, ObjectKind);
-
-        impl Display for Ref {
-            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                Display::fmt(&self.0, f)
-            }
-        }
-
         let missing_pkgs = compute_delta_closure(pkgs, |id| {
             let p = self.get_package(id)?;
             if dest.contains_object(&id, Some(ObjectKind::Package))? {
-                Ok(Path::Abandon)
+                Ok(GraphPath::Abandon)
             } else {
-                Ok(Path::Descend(p.references))
+                Ok(GraphPath::Descend(p.references))
             }
         })?;
 
@@ -181,13 +284,13 @@ pub trait Store {
 
         let missing_content = compute_delta_closure(trees, |Ref(id, kind)| match kind {
             ObjectKind::Blob | ObjectKind::Tree if dest.contains_object(&id, Some(kind))? => {
-                Ok(Path::Abandon)
+                Ok(GraphPath::Abandon)
             }
-            ObjectKind::Blob => Ok(Path::Descend(BTreeSet::new())),
+            ObjectKind::Blob => Ok(GraphPath::Descend(BTreeSet::new())),
             ObjectKind::Tree => {
                 let tree = self.get_tree(id)?;
                 let refs = tree.references();
-                Ok(Path::Descend(refs.map(|(id, k)| Ref(id, k)).collect()))
+                Ok(GraphPath::Descend(refs.map(|(id, k)| Ref(id, k)).collect()))
             }
             ObjectKind::Package => Err(anyhow!("tree object cannot reference package object")),
         })?;
@@ -199,121 +302,64 @@ pub trait Store {
             .map(|Ref(id, kind)| (id, kind))
             .collect())
     }
-}
 
-/// Control flow for the `get_children` closure.
-enum Path<T> {
-    /// Indicates that traversal should continue with the given child nodes.
-    Descend(BTreeSet<T>),
-    /// Indicates that traversal should halt and return a partial result.
-    Abandon,
-}
-
-/// Performs a depth-first search of a directed acyclic graph (DAG), descending from the given root
-/// nodes in `items` and retrieving their child nodes with the `get_children` lambda, and produces
-/// a topologically sorted list of references, where if tree object `P` depends on `Q`, then `P` is
-/// ordered before `Q` in the list.
-///
-/// This sorting is important because it ensures objects and packages get inserted into the store
-/// in a consistent order, where all references are inserted into the store before their referrers.
-fn compute_closure<T, F>(items: BTreeSet<T>, mut get_children: F) -> anyhow::Result<Vec<T>>
-where
-    T: Copy + Display + Eq + Hash + Ord,
-    F: FnMut(T) -> anyhow::Result<BTreeSet<T>>,
-{
-    compute_delta_closure(items, |item| get_children(item).map(Path::Descend))
-}
-
-/// Similar to `compute_closure()`, but with the option to halt early and return a partial result.
-///
-/// If `get_children` returns `Ok(Path::Descend(children))`, it indicates that we should descend
-/// further in the child nodes in a regular depth-first search. However, if `get_children`  returns
-/// `Ok(Path::Abandon)`, it means that we should stop descending any further and try again from a
-/// different root node, if any, returning only a partial result.
-fn compute_delta_closure<T, F>(items: BTreeSet<T>, get_children: F) -> anyhow::Result<Vec<T>>
-where
-    T: Copy + Display + Eq + Hash + Ord,
-    F: FnMut(T) -> anyhow::Result<Path<T>>,
-{
-    #[derive(PartialEq)]
-    enum Traversal {
-        Continue,
-        Halt,
+    /// Iterates over the closure and lazily yields each element in reverse topological order.
+    ///
+    /// This ordering is important because it ensures objects and packages can be inserted into
+    /// stores in a consistent order, where all references are inserted before their referrers.
+    pub fn yield_closure(&self, mut closure: Closure) -> Objects<'_> {
+        Box::new(std::iter::from_fn(move || {
+            if let Some((id, kind)) = closure.next() {
+                Some(self.get_object(id, Some(kind)))
+            } else {
+                None
+            }
+        }))
     }
 
-    // Use a struct with fields and methods because recursive closures are impossible in Rust.
-    struct ClosureBuilder<'a, T: Eq + Hash + Ord, F> {
-        initial_items: &'a BTreeSet<T>,
-        get_children: F,
-        visited: HashSet<T>,
-        parents: HashSet<T>,
-        topo_sorted_items: Vec<T>,
-    }
-
-    impl<'a, T, F> ClosureBuilder<'a, T, F>
+    /// Copies `pkgs` and their dependencies to the remote source `dest`. This will resolve the
+    /// delta closure between the source and the destination and only synchronize objects that are
+    /// missing.
+    pub fn copy_closure<R>(&self, pkgs: BTreeSet<ObjectId>, dest: &mut R) -> anyhow::Result<()>
     where
-        T: Copy + Display + Eq + Hash + Ord,
-        F: FnMut(T) -> anyhow::Result<Path<T>>,
+        R: Remote + ?Sized,
     {
-        pub fn new(initial_items: &'a BTreeSet<T>, get_children: F) -> Self {
-            ClosureBuilder {
-                initial_items,
-                get_children,
-                visited: HashSet::new(),
-                parents: HashSet::new(),
-                topo_sorted_items: Vec::new(),
-            }
-        }
+        let delta = self.compute_delta(pkgs, dest)?;
+        let objects = self.yield_closure(delta);
+        dest.upload_objects(objects)?;
+        Ok(())
+    }
+}
 
-        pub fn compute(mut self) -> anyhow::Result<Vec<T>> {
-            for item in self.initial_items {
-                self.visit_dfs(*item, None)?;
-            }
-
-            // The final list of object IDs is sorted Q -> P, instead of P -> Q; we must fix this.
-            self.topo_sorted_items.reverse();
-            Ok(self.topo_sorted_items)
-        }
-
-        fn visit_dfs(&mut self, item: T, parent_item: Option<T>) -> anyhow::Result<Traversal> {
-            // Reference cycles are forbidden, so exit early if one is found.
-            if self.parents.contains(&item) {
-                return Err(anyhow!(
-                    "detected cycle in closure reference graph: {} -> {}",
-                    item,
-                    parent_item.unwrap()
-                ));
-            }
-
-            // Return early if we have already visited this node before.
-            if !self.visited.insert(item) {
-                return Ok(Traversal::Continue);
-            }
-
-            // Decide whether to continue the DFS or abandon it in favor of the next initial item.
-            let children = match (self.get_children)(item)? {
-                Path::Descend(children) => children,
-                Path::Abandon => return Ok(Traversal::Halt),
-            };
-
-            // Mark this node as a parent, to detect cycles.
-            self.parents.insert(item);
-
-            // Continue descending into the child nodes in a DFS, if any exist.
-            for child in children {
-                if self.visit_dfs(child, Some(item))? == Traversal::Halt {
-                    self.parents.remove(&item);
-                    return Ok(Traversal::Halt);
-                }
-            }
-
-            // All children of this node have been handled, so it's safe to move on.
-            self.topo_sorted_items.push(item);
-            self.parents.remove(&item);
-
-            Ok(Traversal::Continue)
-        }
+impl<B: Backend> Remote for Store<B> {
+    #[inline]
+    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
+        self.contains_object(id, kind)
     }
 
-    ClosureBuilder::new(&items, get_children).compute()
+    #[inline]
+    fn download_objects(&self, closure: Closure) -> anyhow::Result<Objects<'_>> {
+        Ok(self.yield_closure(closure))
+    }
+
+    fn upload_objects(&mut self, objects: Objects) -> anyhow::Result<()> {
+        for result in objects {
+            let obj = result?;
+            self.insert_object(obj)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Newtype used only when computing closures.
+///
+/// This only exists because Rust disallows deriving/implementing traits for tuples.
+#[derive(Clone, Copy, Eq, Hash, PartialEq, PartialOrd, Ord)]
+struct Ref(ObjectId, ObjectKind);
+
+impl Display for Ref {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        Display::fmt(&self.0, f)
+    }
 }

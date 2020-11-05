@@ -1,11 +1,14 @@
 //! Prototype content-addressable Nix-like store backed by a Merkle tree.
 
+pub use self::closure::Closure;
 pub use self::object::*;
 
 use std::io::{self, Read, Write};
 
+pub mod remote;
 pub mod store;
 
+mod closure;
 mod object;
 
 /// An faster implementation of `std::io::copy()` which uses a larger 64K buffer instead of 8K.

@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use foo::store::Store;
-use foo::{store, Blob, Entry, Object, Package, Tree};
+use foo::{Blob, Entry, Object, Package, Tree};
 
 fn main() -> anyhow::Result<()> {
-    // let mut store = store::MemoryStore::default();
-    let mut store = store::FsStore::init("./store")?;
+    // let mut store = Store::in_memory();
+    let mut store = Store::init("./store")?;
 
     let txt_id = store.insert_object(Object::Blob(Blob::from_reader(
         std::io::Cursor::new(b"foobarbaz".to_vec()),
@@ -67,15 +67,22 @@ fn main() -> anyhow::Result<()> {
     println!("program 'foo': {:?}", store.get_package(pkg_id)?);
     println!("program 'bar': {:?}", store.get_package(pkg_id2)?);
 
+    let mut pkgs = BTreeSet::new();
+    pkgs.insert(pkg_id);
+    pkgs.insert(pkg_id2);
+
     println!(
         "closure for 'foo' and 'bar': {:?}",
-        store.compute_closure({
-            let mut pkgs = BTreeSet::new();
-            pkgs.insert(pkg_id);
-            pkgs.insert(pkg_id2);
-            pkgs
-        })?
+        store.compute_closure(pkgs.clone())?
     );
+
+    let mut store2 = Store::init("./store2")?;
+    println!(
+        "closure for 'foo' and 'bar': {:?}",
+        store.compute_delta(pkgs.clone(), &store)?
+    );
+
+    store.copy_closure(pkgs, &mut store2)?;
 
     Ok(())
 }

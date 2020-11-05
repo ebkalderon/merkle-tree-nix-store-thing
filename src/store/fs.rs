@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context};
 use filetime::FileTime;
 
-use super::{Objects, Store};
+use super::{Backend, Iter};
 use crate::object::{Blob, ContentAddressable, Entry, Object, ObjectId, ObjectKind, Package, Tree};
 
 const OBJECTS_SUBDIR: &str = "objects";
@@ -20,29 +20,28 @@ const PACKAGES_SUBDIR: &str = "packages";
 /// this file-level deduplication does not require scheduled optimization passes that "stop the
 /// world," but rather, it happens transparently each time new objects are inserted into the store.
 #[derive(Debug)]
-pub struct FsStore {
+pub struct Filesystem {
     objects_dir: PathBuf,
     packages_dir: PathBuf,
 }
 
-impl FsStore {
+impl Filesystem {
     /// Opens the store on the directory located in `path`.
     ///
     /// Returns `Err` if the path does not exist or is not a valid store directory.
-    pub fn open<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
-        let base = path.into();
-        let objects_dir = base.join(OBJECTS_SUBDIR);
-        let packages_dir = base.join(PACKAGES_SUBDIR);
+    pub fn open(path: PathBuf) -> anyhow::Result<Self> {
+        let objects_dir = path.join(OBJECTS_SUBDIR);
+        let packages_dir = path.join(PACKAGES_SUBDIR);
 
         if objects_dir.is_dir() && packages_dir.is_dir() {
-            Ok(FsStore {
+            Ok(Filesystem {
                 objects_dir,
                 packages_dir,
             })
-        } else if base.exists() {
-            Err(anyhow!("`{}` is not a store directory", base.display()))
+        } else if path.exists() {
+            Err(anyhow!("`{}` is not a store directory", path.display()))
         } else {
-            Err(anyhow!("could not open, `{}` not found", base.display()))
+            Err(anyhow!("could not open, `{}` not found", path.display()))
         }
     }
 
@@ -54,18 +53,17 @@ impl FsStore {
     ///
     /// Returns `Err` if `path` exists and does not point to a valid store directory, or if a new
     /// store directory could not be created at `path` due to permissions or other I/O errors.
-    pub fn init<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
-        let base = path.into();
-        let objects_dir = base.join(OBJECTS_SUBDIR);
-        let packages_dir = base.join(PACKAGES_SUBDIR);
+    pub fn init(path: PathBuf) -> anyhow::Result<Self> {
+        let objects_dir = path.join(OBJECTS_SUBDIR);
+        let packages_dir = path.join(PACKAGES_SUBDIR);
 
-        if !base.exists() {
-            std::fs::create_dir(&base).context("could not create new store directory")?;
+        if !path.exists() {
+            std::fs::create_dir(&path).context("could not create new store directory")?;
             std::fs::create_dir(&objects_dir).context("could not create `objects` dir")?;
             std::fs::create_dir(&packages_dir).context("could not create `packages` dir")?;
         }
 
-        Self::open(base)
+        Self::open(path)
     }
 
     /// Initializes a store inside the empty directory referred to by `path` and opens it.
@@ -75,12 +73,11 @@ impl FsStore {
     /// Returns `Err` if `path` exists and does not point to a valid store directory or an empty
     /// directory, or the new store directory could not be initialized at `path` due to permissions
     /// or I/O errors.
-    pub fn init_bare<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
-        let base = path.into();
-        let objects_dir = base.join(OBJECTS_SUBDIR);
-        let packages_dir = base.join(PACKAGES_SUBDIR);
+    pub fn init_bare(path: PathBuf) -> anyhow::Result<Self> {
+        let objects_dir = path.join(OBJECTS_SUBDIR);
+        let packages_dir = path.join(PACKAGES_SUBDIR);
 
-        let entries = std::fs::read_dir(&base).context("could not bare-init store directory")?;
+        let entries = std::fs::read_dir(&path).context("could not bare-init store directory")?;
         if entries.count() == 0 {
             std::fs::create_dir(&objects_dir).context("could not create `objects` dir")?;
             std::fs::create_dir(&packages_dir).context("could not create `packages` dir")?;
@@ -88,7 +85,7 @@ impl FsStore {
             return Err(anyhow!("could not init store, expected empty directory"));
         }
 
-        Ok(FsStore {
+        Ok(Filesystem {
             objects_dir,
             packages_dir,
         })
@@ -177,7 +174,7 @@ impl FsStore {
     }
 }
 
-impl Store for FsStore {
+impl Backend for Filesystem {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
         fn write_object<F>(p: &Path, perms: u32, mut write_fn: F) -> anyhow::Result<()>
         where
@@ -263,7 +260,7 @@ impl Store for FsStore {
         }
     }
 
-    fn iter_objects(&self) -> anyhow::Result<Objects<'_>> {
+    fn iter_objects(&self) -> anyhow::Result<Iter<'_>> {
         let entries = std::fs::read_dir(&self.objects_dir)?
             .filter_map(|r| r.ok())
             .filter_map(|entry| entry.path().read_dir().ok())

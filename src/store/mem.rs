@@ -5,7 +5,7 @@ use std::io::Read;
 
 use anyhow::anyhow;
 
-use super::{Objects, Store};
+use super::{Backend, Iter};
 use crate::object::{Blob, ContentAddressable, Object, ObjectId, ObjectKind, Package, Tree};
 
 /// Private replacement for `Object` which implements `Clone`.
@@ -66,11 +66,11 @@ impl From<Inline> for Object {
 
 /// A store implementation kept in memory, useful for testing.
 #[derive(Debug, Default)]
-pub struct MemoryStore {
+pub struct Memory {
     objects: BTreeMap<ObjectId, Inline>,
 }
 
-impl Store for MemoryStore {
+impl Backend for Memory {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
         use std::collections::btree_map::Entry;
         let id = o.object_id();
@@ -91,7 +91,7 @@ impl Store for MemoryStore {
             .ok_or(anyhow!("object {} not found", id))
     }
 
-    fn iter_objects(&self) -> anyhow::Result<Objects<'_>> {
+    fn iter_objects(&self) -> anyhow::Result<Iter<'_>> {
         Ok(Box::new(
             self.objects.iter().map(|(&k, v)| (k, v.kind())).map(Ok),
         ))
