@@ -91,7 +91,7 @@ impl Write for PagedBuffer {
                 if inner.get_ref().len() + buf.len() > self.threshold {
                     // TODO: Should we create this in a directory like `<store>/tmp` for security?
                     let mut file = tempfile::NamedTempFile::new()?;
-                    crate::copy_wide(inner, &mut file)?;
+                    file.write_all(inner.get_ref())?;
                     file.flush()?;
 
                     let len = file.write(buf)?;
