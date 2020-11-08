@@ -78,10 +78,11 @@ fn main() -> anyhow::Result<()> {
 
     let mut store2 = Store::init("./store2")?;
     println!(
-        "closure for 'foo' and 'bar': {:?}",
-        store.compute_delta(pkgs.clone(), &store)?
+        "delta closure between store and store2: {:?}",
+        store.compute_delta(pkgs.clone(), &store2)?
     );
 
+    println!("copying delta from store -> store2");
     store.copy_closure(pkgs, &mut store2)?;
 
     Ok(())
