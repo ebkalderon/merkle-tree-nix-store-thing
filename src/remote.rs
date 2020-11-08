@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use crate::{Closure, ObjectId, ObjectKind, Objects};
 
+mod chunker;
+
 /// A remote source from which objects can be fetched or uploaded.
 pub trait Remote {
     /// Returns `Ok(true)` if the remote source contains a tree object with the given unique ID, or

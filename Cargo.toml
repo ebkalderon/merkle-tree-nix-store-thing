@@ -8,12 +8,14 @@ edition = "2018"
 anyhow = "1.0.32"
 blake3 = { version = "0.3.6", features = ["rayon"] }
 filetime = "0.2.12"
+futures = "0.3.7"
 hex = { version = "0.4.2", features = ["serde"] }
 memmap = "0.7.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.58"
 smol_str = { version = "0.1.17", features = ["serde"] }
 tempfile = "3.1.0"
+tokio = "0.3.3"
 
 [dev-dependencies]
 criterion = "0.3.3"
