@@ -37,9 +37,9 @@ impl Iterator for Closure {
 
 /// Control flow for the `get_children` closure.
 pub enum GraphPath<T> {
-    /// Indicates that traversal should continue with the given child nodes.
+    /// Indicates that the node should be included in the closure and descend into its child nodes.
     Descend(BTreeSet<T>),
-    /// Indicates that traversal should halt and return a partial result.
+    /// Indicates that the node should not be included in the closure.
     Abandon,
 }
 
@@ -58,23 +58,17 @@ where
     compute_delta_closure(items, |item| get_children(item).map(GraphPath::Descend))
 }
 
-/// Similar to `compute_closure()`, but with the option to halt early and return a partial result.
+/// Similar to `compute_closure()`, but with the option to skip nodes and return a partial result.
 ///
-/// If `get_children` returns `Ok(Path::Descend(children))`, it indicates that we should descend
-/// further in the child nodes in a regular depth-first search. However, if `get_children`  returns
-/// `Ok(Path::Abandon)`, it means that we should stop descending any further and try again from a
-/// different root node, if any, returning only a partial result.
+/// If `get_children` returns `Ok(GraphPath::Descend(children))`, it indicates that we should
+/// include the current node in the closure and descend further in the child nodes. However, if
+/// `get_children` returns `Ok(GraphPath::Abandon)`, it means that we should not include the
+/// current node in the closure and not attempt to descend any further.
 pub fn compute_delta_closure<T, F>(items: BTreeSet<T>, get_children: F) -> anyhow::Result<Vec<T>>
 where
     T: Copy + Display + Eq + Hash + Ord,
     F: FnMut(T) -> anyhow::Result<GraphPath<T>>,
 {
-    #[derive(PartialEq)]
-    enum Traversal {
-        Continue,
-        Halt,
-    }
-
     // Use a struct with fields and methods because recursive closures are impossible in Rust.
     struct ClosureBuilder<'a, T: Eq + Hash + Ord, F> {
         initial_items: &'a BTreeSet<T>,
@@ -109,7 +103,7 @@ where
             Ok(self.topo_sorted_items)
         }
 
-        fn visit_dfs(&mut self, item: T, parent_item: Option<T>) -> anyhow::Result<Traversal> {
+        fn visit_dfs(&mut self, item: T, parent_item: Option<T>) -> anyhow::Result<()> {
             // Reference cycles are forbidden, so exit early if one is found.
             if self.parents.contains(&item) {
                 return Err(anyhow!(
@@ -121,13 +115,13 @@ where
 
             // Return early if we have already visited this node before.
             if !self.visited.insert(item) {
-                return Ok(Traversal::Continue);
+                return Ok(());
             }
 
-            // Decide whether to continue the DFS or abandon it in favor of the next initial item.
+            // Decide whether to continue the DFS or abandon it in favor of the next item.
             let children = match (self.get_children)(item)? {
                 GraphPath::Descend(children) => children,
-                GraphPath::Abandon => return Ok(Traversal::Halt),
+                GraphPath::Abandon => return Ok(()),
             };
 
             // Mark this node as a parent, to detect cycles.
@@ -135,17 +129,14 @@ where
 
             // Continue descending into the child nodes in a DFS, if any exist.
             for child in children {
-                if self.visit_dfs(child, Some(item))? == Traversal::Halt {
-                    self.parents.remove(&item);
-                    return Ok(Traversal::Halt);
-                }
+                self.visit_dfs(child, Some(item))?;
             }
 
             // All children of this node have been handled, so it's safe to move on.
             self.topo_sorted_items.push(item);
             self.parents.remove(&item);
 
-            Ok(Traversal::Continue)
+            Ok(())
         }
     }
 
