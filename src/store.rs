@@ -9,7 +9,7 @@ use anyhow::anyhow;
 
 use self::fs::Filesystem;
 use self::mem::Memory;
-use crate::closure::{compute_closure, compute_delta_closure, GraphPath};
+use crate::closure::{compute_closure, compute_delta_closure, Include};
 use crate::remote::Remote;
 use crate::{Blob, Closure, Object, ObjectId, ObjectKind, Objects, Package, Tree};
 
@@ -270,9 +270,9 @@ impl<B: Backend> Store<B> {
         let missing_pkgs = compute_delta_closure(pkgs, |id| {
             let p = self.get_package(id)?;
             if dest.contains_object(&id, Some(ObjectKind::Package))? {
-                Ok(GraphPath::Abandon)
+                Ok(Include::No)
             } else {
-                Ok(GraphPath::Descend(p.references))
+                Ok(Include::Yes(p.references))
             }
         })?;
 
@@ -284,13 +284,13 @@ impl<B: Backend> Store<B> {
 
         let missing_content = compute_delta_closure(trees, |Ref(id, kind)| match kind {
             ObjectKind::Blob | ObjectKind::Tree if dest.contains_object(&id, Some(kind))? => {
-                Ok(GraphPath::Abandon)
+                Ok(Include::No)
             }
-            ObjectKind::Blob => Ok(GraphPath::Descend(BTreeSet::new())),
+            ObjectKind::Blob => Ok(Include::Yes(BTreeSet::new())),
             ObjectKind::Tree => {
                 let tree = self.get_tree(id)?;
                 let refs = tree.references();
-                Ok(GraphPath::Descend(refs.map(|(id, k)| Ref(id, k)).collect()))
+                Ok(Include::Yes(refs.map(|(id, k)| Ref(id, k)).collect()))
             }
             ObjectKind::Package => Err(anyhow!("tree object cannot reference package object")),
         })?;

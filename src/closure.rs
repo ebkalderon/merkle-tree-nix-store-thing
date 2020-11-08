@@ -36,11 +36,11 @@ impl Iterator for Closure {
 }
 
 /// Control flow for the `get_children` closure.
-pub enum GraphPath<T> {
+pub enum Include<T> {
     /// Indicates that the node should be included in the closure and descend into its child nodes.
-    Descend(BTreeSet<T>),
+    Yes(BTreeSet<T>),
     /// Indicates that the node should not be included in the closure.
-    Abandon,
+    No,
 }
 
 /// Performs a depth-first search of a directed acyclic graph (DAG), descending from the given root
@@ -55,19 +55,19 @@ where
     T: Copy + Display + Eq + Hash + Ord,
     F: FnMut(T) -> anyhow::Result<BTreeSet<T>>,
 {
-    compute_delta_closure(items, |item| get_children(item).map(GraphPath::Descend))
+    compute_delta_closure(items, |item| get_children(item).map(Include::Yes))
 }
 
 /// Similar to `compute_closure()`, but with the option to skip nodes and return a partial result.
 ///
-/// If `get_children` returns `Ok(GraphPath::Descend(children))`, it indicates that we should
+/// If `get_children` returns `Ok(Include::Yes(children))`, it indicates that we should
 /// include the current node in the closure and descend further in the child nodes. However, if
-/// `get_children` returns `Ok(GraphPath::Abandon)`, it means that we should not include the
+/// `get_children` returns `Ok(Include::No)`, it means that we should not include the
 /// current node in the closure and not attempt to descend any further.
 pub fn compute_delta_closure<T, F>(items: BTreeSet<T>, get_children: F) -> anyhow::Result<Vec<T>>
 where
     T: Copy + Display + Eq + Hash + Ord,
-    F: FnMut(T) -> anyhow::Result<GraphPath<T>>,
+    F: FnMut(T) -> anyhow::Result<Include<T>>,
 {
     // Use a struct with fields and methods because recursive closures are impossible in Rust.
     struct ClosureBuilder<'a, T: Eq + Hash + Ord, F> {
@@ -81,7 +81,7 @@ where
     impl<'a, T, F> ClosureBuilder<'a, T, F>
     where
         T: Copy + Display + Eq + Hash + Ord,
-        F: FnMut(T) -> anyhow::Result<GraphPath<T>>,
+        F: FnMut(T) -> anyhow::Result<Include<T>>,
     {
         pub fn new(initial_items: &'a BTreeSet<T>, get_children: F) -> Self {
             ClosureBuilder {
@@ -120,8 +120,8 @@ where
 
             // Decide whether to continue the DFS or abandon it in favor of the next item.
             let children = match (self.get_children)(item)? {
-                GraphPath::Descend(children) => children,
-                GraphPath::Abandon => return Ok(()),
+                Include::Yes(children) => children,
+                Include::No => return Ok(()),
             };
 
             // Mark this node as a parent, to detect cycles.
