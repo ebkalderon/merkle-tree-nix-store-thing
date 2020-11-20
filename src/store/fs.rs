@@ -111,7 +111,7 @@ impl Filesystem {
 
                 // Serialize the tree to a temporary directory first. This way, if an error occurs,
                 // the `packages` directory will not be left in an inconsistent state.
-                let temp_dir = tempfile::tempdir()?;
+                let temp_dir = tempfile::tempdir_in("/var/tmp")?;
                 self.write_tree(temp_dir.path(), tree)?;
 
                 // Atomically move the checked out package directory to its final location.
@@ -181,7 +181,7 @@ impl Backend for Filesystem {
             F: FnMut(&std::fs::File) -> anyhow::Result<()>,
         {
             if !p.exists() {
-                let mut file = tempfile::NamedTempFile::new()?;
+                let mut file = tempfile::NamedTempFile::new_in("/var/tmp")?;
                 write_fn(&file.as_file())?;
 
                 let perms = std::fs::Permissions::from_mode(perms);

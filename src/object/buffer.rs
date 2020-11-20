@@ -49,7 +49,7 @@ impl PagedBuffer {
     pub fn persist(self, dest: &Path, perms: Permissions) -> anyhow::Result<()> {
         match self.inner {
             Storage::Inline(mut inner) => {
-                let mut temp = tempfile::NamedTempFile::new()?;
+                let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                 crate::copy_wide(&mut inner, &mut temp)?;
                 temp.as_file_mut().set_permissions(perms)?;
                 filetime::set_file_mtime(temp.path(), FileTime::zero())?;
@@ -90,7 +90,7 @@ impl Write for PagedBuffer {
             Storage::Inline(ref mut inner) => {
                 if inner.get_ref().len() + buf.len() > self.threshold {
                     // TODO: Should we create this in a directory like `<store>/tmp` for security?
-                    let mut file = tempfile::NamedTempFile::new()?;
+                    let mut file = tempfile::NamedTempFile::new_in("/var/tmp")?;
                     file.write_all(inner.get_ref())?;
                     file.flush()?;
 

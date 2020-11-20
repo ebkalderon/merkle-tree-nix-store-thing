@@ -231,7 +231,7 @@ impl Blob {
             }
             Strategy::Io(mut file, is_executable, length) => {
                 let header = blob_header(is_executable);
-                let temp = tempfile::NamedTempFile::new()?;
+                let temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                 let mut writer = HashWriter::with_header(header, temp);
                 crate::copy_wide(&mut file, &mut writer)?;
                 Ok(Blob {
@@ -322,7 +322,7 @@ impl Blob {
 
             match self.stream {
                 Kind::Inline(inner) => {
-                    let mut temp = tempfile::NamedTempFile::new()?;
+                    let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                     temp.write_all(inner.get_ref())?;
                     temp.flush()?;
 
@@ -332,7 +332,7 @@ impl Blob {
                     temp.persist(dest)?;
                 }
                 Kind::Mmap(mut inner) => {
-                    let mut temp = tempfile::NamedTempFile::new()?;
+                    let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                     crate::copy_wide(&mut inner, &mut temp)?;
 
                     temp.as_file_mut().set_permissions(perms)?;
@@ -349,7 +349,7 @@ impl Blob {
                 Kind::StoreFile(_, src) if src == dest => panic!("cannot persist file to itself"),
                 Kind::StoreFile(_, src) => {
                     let file_name = src.file_name().unwrap();
-                    let temp_path = std::env::temp_dir().join(file_name);
+                    let temp_path = PathBuf::from("/var/tmp").join(file_name);
                     std::fs::copy(src, &temp_path)?;
 
                     std::fs::set_permissions(&temp_path, perms)?;
