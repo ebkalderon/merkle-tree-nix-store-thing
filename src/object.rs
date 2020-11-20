@@ -95,6 +95,7 @@ pub enum Object {
 
 impl Object {
     /// Returns the type of this object.
+    #[inline]
     pub fn kind(&self) -> ObjectKind {
         match *self {
             Object::Blob(_) => ObjectKind::Blob,
@@ -106,6 +107,7 @@ impl Object {
     /// Attempts to consume this object and return a `Blob`.
     ///
     /// Returns `Err(self)` if this object is not actually a `Blob`.
+    #[inline]
     pub fn into_blob(self) -> Result<Blob, Self> {
         match self {
             Object::Blob(b) => Ok(b),
@@ -116,6 +118,7 @@ impl Object {
     /// Attempts to consume this object and return a `Tree`.
     ///
     /// Returns `Err(self)` if this object is not actually a `Tree`.
+    #[inline]
     pub fn into_tree(self) -> Result<Tree, Self> {
         match self {
             Object::Tree(t) => Ok(t),
@@ -126,6 +129,7 @@ impl Object {
     /// Attempts to consume this object and return a `Package`.
     ///
     /// Returns `Err(self)` if this object is not actually a `Package`.
+    #[inline]
     pub fn into_package(self) -> Result<Package, Self> {
         match self {
             Object::Package(o) => Ok(o),
