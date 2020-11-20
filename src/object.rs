@@ -15,12 +15,12 @@ use memmap::{Mmap, MmapOptions};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use self::buffer::PagedBuffer;
+use self::spooled::SpooledTempFile;
 
 pub mod pack;
 
-mod buffer;
 mod id;
+mod spooled;
 
 const BLOB_FILE_EXT: &str = "blob";
 const TREE_FILE_EXT: &str = "tree";
@@ -149,7 +149,7 @@ impl ContentAddressable for Object {
 enum Kind {
     Inline(Cursor<Vec<u8>>),
     Mmap(Cursor<Mmap>),
-    Paged(PagedBuffer),
+    Spooled(SpooledTempFile),
     File(tempfile::NamedTempFile),
     StoreFile(std::fs::File, PathBuf),
 }
@@ -276,13 +276,13 @@ impl Blob {
     /// Returns `Err` if an I/O error occurred.
     pub fn from_reader<R: Read>(mut reader: R, is_executable: bool) -> anyhow::Result<Self> {
         let header = blob_header(is_executable);
-        let paged_writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
-        let mut writer = HashWriter::with_header(header, paged_writer);
+        let spooled_writer = SpooledTempFile::new(32 * 1024 * 1024);
+        let mut writer = HashWriter::with_header(header, spooled_writer);
         let length = crate::copy_wide(&mut reader, &mut writer)?;
 
         Ok(Blob {
             object_id: writer.object_id(),
-            stream: Kind::Paged(writer.into_inner()),
+            stream: Kind::Spooled(writer.into_inner()),
             is_executable,
             length,
         })
@@ -294,10 +294,10 @@ impl Blob {
         is_executable: bool,
         object_id: ObjectId,
     ) -> anyhow::Result<Self> {
-        let mut writer = PagedBuffer::with_threshold(32 * 1024 * 1024);
+        let mut writer = SpooledTempFile::new(32 * 1024 * 1024);
         let length = crate::copy_wide(&mut reader, &mut writer)?;
         Ok(Blob {
-            stream: Kind::Paged(writer),
+            stream: Kind::Spooled(writer),
             is_executable,
             length,
             object_id,
@@ -340,7 +340,7 @@ impl Blob {
 
                     temp.persist(dest)?;
                 }
-                Kind::Paged(inner) => inner.persist(dest, perms)?,
+                Kind::Spooled(inner) => inner.persist(dest, perms)?,
                 Kind::File(mut inner) => {
                     inner.as_file_mut().set_permissions(perms)?;
                     filetime::set_file_mtime(inner.path(), FileTime::zero())?;
@@ -375,7 +375,7 @@ impl Read for Blob {
         match self.stream {
             Kind::Inline(ref mut inner) => inner.read(buf),
             Kind::Mmap(ref mut inner) => inner.read(buf),
-            Kind::Paged(ref mut inner) => inner.read(buf),
+            Kind::Spooled(ref mut inner) => inner.read(buf),
             Kind::File(ref mut inner) => inner.read(buf),
             Kind::StoreFile(ref mut inner, _) => inner.read(buf),
         }
