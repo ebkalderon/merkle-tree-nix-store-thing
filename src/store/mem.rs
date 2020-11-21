@@ -6,7 +6,7 @@ use std::io::Read;
 use anyhow::anyhow;
 
 use super::{Backend, Iter};
-use crate::object::{Blob, ContentAddressable, Object, ObjectId, ObjectKind, Package, Tree};
+use crate::object::{Blob, ContentAddressable, Object, ObjectId, ObjectKind, Package, Spec, Tree};
 
 /// Private replacement for `Object` which implements `Clone`.
 ///
@@ -22,6 +22,7 @@ enum Inline {
     },
     Tree(Tree),
     Package(Package),
+    Spec(Spec),
 }
 
 impl Inline {
@@ -38,6 +39,7 @@ impl Inline {
             }
             Object::Tree(t) => Ok(Inline::Tree(t)),
             Object::Package(p) => Ok(Inline::Package(p)),
+            Object::Spec(s) => Ok(Inline::Spec(s)),
         }
     }
 
@@ -46,6 +48,7 @@ impl Inline {
             Inline::Blob { .. } => ObjectKind::Blob,
             Inline::Tree(_) => ObjectKind::Tree,
             Inline::Package(_) => ObjectKind::Package,
+            Inline::Spec(_) => ObjectKind::Spec,
         }
     }
 }
@@ -60,6 +63,7 @@ impl From<Inline> for Object {
             } => Object::Blob(Blob::from_bytes_unchecked(stream, is_executable, object_id)),
             Inline::Tree(t) => Object::Tree(t),
             Inline::Package(p) => Object::Package(p),
+            Inline::Spec(s) => Object::Spec(s),
         }
     }
 }

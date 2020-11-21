@@ -223,6 +223,13 @@ impl Backend for Filesystem {
                     Ok(())
                 })?;
             }
+            Object::Spec(spec) => {
+                write_object(&path, 0o444, |mut file| {
+                    serde_json::to_writer(&mut file, &spec)?;
+                    file.flush()?;
+                    Ok(())
+                })?;
+            }
         }
 
         Ok(id)
@@ -255,6 +262,11 @@ impl Backend for Filesystem {
                 let file = std::fs::File::open(path)?;
                 let package = serde_json::from_reader(file)?;
                 Ok(Object::Package(package))
+            }
+            Some(ObjectKind::Spec) => {
+                let file = std::fs::File::open(path)?;
+                let spec = serde_json::from_reader(file)?;
+                Ok(Object::Spec(spec))
             }
             None => Err(anyhow!("object {} not found", id)),
         }

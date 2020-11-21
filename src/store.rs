@@ -11,7 +11,7 @@ use self::fs::Filesystem;
 use self::mem::Memory;
 use crate::closure::{compute_closure, compute_delta_closure, Include};
 use crate::remote::Remote;
-use crate::{Blob, Closure, Object, ObjectId, ObjectKind, Objects, Package, Tree};
+use crate::{Blob, Closure, Object, ObjectId, ObjectKind, Objects, Package, Spec, Tree};
 
 mod fs;
 mod mem;
@@ -89,6 +89,17 @@ pub trait Backend {
                 o.into_package()
                     .map_err(|_| anyhow!("{} is not a package object", id))
             })
+    }
+
+    /// Looks up a `Spec` object with the given ID and retrieves it, if it exists.
+    ///
+    /// Returns `Err` if the object does not exist, the given ID does not refer to a `Spec` object,
+    /// or an I/O error occurred.
+    fn get_spec(&self, id: ObjectId) -> anyhow::Result<Spec> {
+        self.get_object(id, Some(ObjectKind::Spec)).and_then(|o| {
+            o.into_spec()
+                .map_err(|_| anyhow!("{} is not a spec object", id))
+        })
     }
 }
 
@@ -218,6 +229,15 @@ impl<B: Backend> Store<B> {
         self.backend.get_package(id)
     }
 
+    /// Looks up a `Spec` object with the given ID and retrieves it, if it exists.
+    ///
+    /// Returns `Err` if the object does not exist, the given ID does not refer to a `Spec` object,
+    /// or an I/O error occurred.
+    #[inline]
+    pub fn get_spec(&self, id: ObjectId) -> anyhow::Result<Spec> {
+        self.backend.get_spec(id)
+    }
+
     /// Computes the filesystem closure for the given packages.
     ///
     /// Returns `Err` if any of the given object IDs do not exist, any of the object IDs do not
@@ -244,6 +264,7 @@ impl<B: Backend> Store<B> {
                     .chain(std::iter::once(tree_ref))
                     .collect())
             }
+            ObjectKind::Spec => unimplemented!(),
         })?;
 
         Ok(closure
@@ -293,6 +314,7 @@ impl<B: Backend> Store<B> {
                 Ok(Include::Yes(refs.map(|(id, k)| Ref(id, k)).collect()))
             }
             ObjectKind::Package => Err(anyhow!("tree object cannot reference package object")),
+            ObjectKind::Spec => unimplemented!(),
         })?;
 
         Ok(missing_pkgs

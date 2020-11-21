@@ -12,6 +12,7 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use filetime::FileTime;
 use memmap::{Mmap, MmapOptions};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -25,6 +26,7 @@ mod spooled;
 const BLOB_FILE_EXT: &str = "blob";
 const TREE_FILE_EXT: &str = "tree";
 const PACKAGE_FILE_EXT: &str = "pkg";
+const SPEC_FILE_EXT: &str = "spec";
 
 /// Streaming iterator of tree objects.
 pub type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<Object>> + 'a>;
@@ -46,6 +48,8 @@ pub enum ObjectKind {
     Tree,
     /// Installed package with a name, platform, package references, and an output directory tree.
     Package,
+    /// Manifest which describes how to build a package from source.
+    Spec,
 }
 
 impl ObjectKind {
@@ -55,6 +59,7 @@ impl ObjectKind {
         once(ObjectKind::Blob)
             .chain(once(ObjectKind::Tree))
             .chain(once(ObjectKind::Package))
+            .chain(once(ObjectKind::Spec))
     }
 
     /// Returns the string representation of the `ObjectKind`.
@@ -65,6 +70,7 @@ impl ObjectKind {
             ObjectKind::Blob => BLOB_FILE_EXT,
             ObjectKind::Tree => TREE_FILE_EXT,
             ObjectKind::Package => PACKAGE_FILE_EXT,
+            ObjectKind::Spec => SPEC_FILE_EXT,
         }
     }
 }
@@ -77,6 +83,7 @@ impl FromStr for ObjectKind {
             BLOB_FILE_EXT => Ok(ObjectKind::Blob),
             TREE_FILE_EXT => Ok(ObjectKind::Tree),
             PACKAGE_FILE_EXT => Ok(ObjectKind::Package),
+            SPEC_FILE_EXT => Ok(ObjectKind::Spec),
             ext => Err(anyhow!("unrecognized object file extension: {}", ext)),
         }
     }
@@ -91,6 +98,8 @@ pub enum Object {
     Tree(Tree),
     /// Installed package with a name, platform, package references, and an output directory tree.
     Package(Package),
+    /// Manifest which describes how to build a package from source.
+    Spec(Spec),
 }
 
 impl Object {
@@ -101,6 +110,7 @@ impl Object {
             Object::Blob(_) => ObjectKind::Blob,
             Object::Tree(_) => ObjectKind::Tree,
             Object::Package(_) => ObjectKind::Package,
+            Object::Spec(_) => ObjectKind::Spec,
         }
     }
 
@@ -136,6 +146,17 @@ impl Object {
             other => Err(other),
         }
     }
+
+    /// Attempts to consume this object and return a `Spec`.
+    ///
+    /// Returns `Err(self)` if this object is not actually a `Spec`.
+    #[inline]
+    pub fn into_spec(self) -> Result<Spec, Self> {
+        match self {
+            Object::Spec(o) => Ok(o),
+            other => Err(other),
+        }
+    }
 }
 
 impl ContentAddressable for Object {
@@ -144,6 +165,7 @@ impl ContentAddressable for Object {
             Object::Blob(ref o) => o.object_id(),
             Object::Tree(ref t) => t.object_id(),
             Object::Package(ref o) => o.object_id(),
+            Object::Spec(ref o) => o.object_id(),
         }
     }
 }
@@ -492,13 +514,11 @@ impl Display for InstallName {
 ///
 /// Package objects have an output directory tree and may reference other packages at run-time or
 /// at build-time.
-///
-/// TODO: Need to handle builders, build-time dependencies, and hash rewriting.
 #[derive(Clone, Debug, Hash, Deserialize, Serialize)]
 pub struct Package {
     /// The human-readable name.
     pub name: SmolStr,
-    /// The target platform spec it supports.
+    /// The target platform it supports.
     pub system: String,
     /// Any other packages it references at run-time.
     pub references: BTreeSet<ObjectId>,
@@ -521,6 +541,36 @@ impl ContentAddressable for Package {
         let pkg_hash = serde_json::to_vec(self).unwrap();
         let mut hasher = id::Hasher::new();
         hasher.update(b"pkg:").update(&pkg_hash[..]);
+        hasher.finish()
+    }
+}
+
+/// Represents a package specification object.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Spec {
+    /// The human-readable name.
+    pub name: SmolStr,
+    /// The semantic version string.
+    pub version: Version,
+    /// Short description of the package.
+    pub description: Option<String>,
+    /// SPDX 2.1 expression.
+    pub license: Option<SmolStr>,
+    /// The target platform it supports.
+    pub system: String,
+    /// Packages required at run-time and build-time.
+    pub dependencies: BTreeSet<ObjectId>,
+    /// Packages only available at build-time.
+    pub build_dependencies: BTreeSet<ObjectId>,
+    /// Build script to execute in sandbox.
+    pub builder: String,
+}
+
+impl ContentAddressable for Spec {
+    fn object_id(&self) -> ObjectId {
+        let spec_hash = serde_json::to_vec(self).unwrap();
+        let mut hasher = id::Hasher::new();
+        hasher.update(b"spec:").update(&spec_hash[..]);
         hasher.finish()
     }
 }

@@ -4,6 +4,7 @@ use std::convert::{TryFrom, TryInto};
 use std::io::{Read, Write};
 
 use anyhow::anyhow;
+use serde::Serialize;
 
 use super::{Blob, ContentAddressable, Object, ObjectId};
 
@@ -18,6 +19,7 @@ enum ObjectKind {
     Exec = 1,
     Tree = 2,
     Package = 3,
+    Spec = 4,
 }
 
 impl TryFrom<u8> for ObjectKind {
@@ -29,6 +31,7 @@ impl TryFrom<u8> for ObjectKind {
             1 => Ok(ObjectKind::Exec),
             2 => Ok(ObjectKind::Tree),
             3 => Ok(ObjectKind::Package),
+            4 => Ok(ObjectKind::Spec),
             b => Err(anyhow!("unrecognized object kind byte: {}", b)),
         }
     }
@@ -57,14 +60,6 @@ impl<W: Write> PackWriter<W> {
     ///
     /// Returns `Err` if a serialization or I/O error occurred.
     pub fn append(&mut self, o: Object) -> anyhow::Result<()> {
-        fn make_header(id: ObjectId, kind: ObjectKind, len: u64) -> [u8; HEADER_LEN] {
-            let mut buf = [0u8; HEADER_LEN];
-            buf[..ObjectId::LENGTH].copy_from_slice(id.as_bytes());
-            buf[ObjectId::LENGTH] = kind as u8;
-            buf[ObjectId::LENGTH + 1..].copy_from_slice(&len.to_be_bytes());
-            buf
-        }
-
         match o {
             Object::Blob(mut blob) => {
                 let kind = if blob.is_executable() {
@@ -76,21 +71,23 @@ impl<W: Write> PackWriter<W> {
                 self.inner.write_all(&header)?;
                 crate::copy_wide(&mut blob, &mut self.inner)?;
             }
-            Object::Tree(tree) => {
-                let body = serde_json::to_vec(&tree)?;
-                let header = make_header(tree.object_id(), ObjectKind::Tree, body.len() as u64);
-                let combined: Vec<_> = header.iter().copied().chain(body).collect();
-                self.inner.write_all(&combined)?;
-            }
-            Object::Package(pkg) => {
-                let body = serde_json::to_vec(&pkg)?;
-                let header = make_header(pkg.object_id(), ObjectKind::Package, body.len() as u64);
-                let combined: Vec<_> = header.iter().copied().chain(body).collect();
-                self.inner.write_all(&combined)?;
-            }
+            Object::Tree(tree) => self.write_meta_object(&tree, ObjectKind::Tree)?,
+            Object::Package(pkg) => self.write_meta_object(&pkg, ObjectKind::Package)?,
+            Object::Spec(spec) => self.write_meta_object(&spec, ObjectKind::Spec)?,
         }
 
         self.inner.flush()?;
+        Ok(())
+    }
+
+    fn write_meta_object<O>(&mut self, obj: &O, kind: ObjectKind) -> anyhow::Result<()>
+    where
+        O: ContentAddressable + Serialize,
+    {
+        let body = serde_json::to_vec(&obj)?;
+        let header = make_header(obj.object_id(), kind, body.len() as u64);
+        let combined: Vec<_> = header.iter().copied().chain(body).collect();
+        self.inner.write_all(&combined)?;
         Ok(())
     }
 
@@ -103,6 +100,14 @@ impl<W: Write> PackWriter<W> {
         inner.flush()?;
         Ok(inner)
     }
+}
+
+fn make_header(id: ObjectId, kind: ObjectKind, len: u64) -> [u8; HEADER_LEN] {
+    let mut buf = [0u8; HEADER_LEN];
+    buf[..ObjectId::LENGTH].copy_from_slice(id.as_bytes());
+    buf[ObjectId::LENGTH] = kind as u8;
+    buf[ObjectId::LENGTH + 1..].copy_from_slice(&len.to_be_bytes());
+    buf
 }
 
 /// Deserializes a binary packfile into an iterator of `Object`s.
@@ -174,6 +179,12 @@ impl<R: Read> PackReader<R> {
                 self.inner.read_exact(&mut buffer)?;
                 let pkg = serde_json::from_slice(&buffer)?;
                 Ok(Some(Object::Package(pkg)))
+            }
+            ObjectKind::Spec => {
+                let mut buffer = vec![0u8; len as usize].into_boxed_slice();
+                self.inner.read_exact(&mut buffer)?;
+                let spec = serde_json::from_slice(&buffer)?;
+                Ok(Some(Object::Spec(spec)))
             }
         }
     }
