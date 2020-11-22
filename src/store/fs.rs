@@ -116,9 +116,11 @@ impl Filesystem {
 
                 // Atomically move the checked out package directory to its final location.
                 let finished_dir = temp_dir.into_path();
-                std::fs::rename(finished_dir, target_dir)?;
-
-                Ok(())
+                match std::fs::rename(finished_dir, &target_dir) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.raw_os_error() == Some(39) => Ok(()),
+                    Err(e) => Err(e).context(format!("failed to persist {}", target_dir.display())),
+                }
             } else {
                 Err(anyhow!(
                     "failed to checkout package, missing: {:?}",
@@ -189,7 +191,11 @@ impl Backend for Filesystem {
                 filetime::set_file_mtime(file.path(), FileTime::zero())?;
 
                 file.as_file_mut().sync_all()?;
-                file.persist(p)?;
+                match file.persist(p) {
+                    Ok(_) => {}
+                    Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(e.into()),
+                }
             }
 
             Ok(())
@@ -202,7 +208,11 @@ impl Backend for Filesystem {
         // Create the two-character parent directory, if it doesn't already exist.
         let parent_dir = path.parent().expect("path cannot be at filesystem root");
         if !parent_dir.exists() {
-            std::fs::create_dir(parent_dir)?;
+            match std::fs::create_dir(parent_dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e.into()),
+            }
         }
 
         path.set_extension(o.kind().as_str());
