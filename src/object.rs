@@ -196,8 +196,8 @@ pub struct Blob {
 impl Blob {
     /// Hashes and returns a new `Blob` object from the given buffer.
     pub fn from_bytes(input: Vec<u8>, is_executable: bool) -> Self {
-        let mut hasher = id::Hasher::new();
-        hasher.update(blob_header(is_executable)).update(&input);
+        let mut hasher = id::Hasher::new_blob(is_executable);
+        hasher.update(&input);
         Blob {
             length: input.len() as u64,
             stream: Kind::Inline(Cursor::new(input)),
@@ -234,9 +234,8 @@ impl Blob {
     pub fn from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         match open_for_large_read(path.as_ref())? {
             Strategy::Inline(buffer, is_executable, length) => {
-                let header = blob_header(is_executable);
-                let mut hasher = id::Hasher::new();
-                hasher.update(header).update(buffer.get_ref());
+                let mut hasher = id::Hasher::new_blob(is_executable);
+                hasher.update(buffer.get_ref());
                 Ok(Blob {
                     stream: Kind::Inline(buffer),
                     is_executable,
@@ -245,9 +244,8 @@ impl Blob {
                 })
             }
             Strategy::Mmap(mmap, is_executable, length) => {
-                let header = blob_header(is_executable);
-                let mut hasher = id::Hasher::new();
-                hasher.update(header).par_update(mmap.get_ref());
+                let mut hasher = id::Hasher::new_blob(is_executable);
+                hasher.par_update(mmap.get_ref());
                 Ok(Blob {
                     stream: Kind::Mmap(mmap),
                     is_executable,
@@ -256,9 +254,9 @@ impl Blob {
                 })
             }
             Strategy::Io(mut file, is_executable, length) => {
-                let header = blob_header(is_executable);
+                let hasher = id::Hasher::new_blob(is_executable);
                 let temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
-                let mut writer = HashWriter::with_header(header, temp);
+                let mut writer = HashWriter::with_hasher(hasher, temp);
                 crate::copy_wide(&mut file, &mut writer)?;
                 Ok(Blob {
                     object_id: writer.object_id(),
@@ -301,9 +299,9 @@ impl Blob {
     ///
     /// Returns `Err` if an I/O error occurred.
     pub fn from_reader<R: Read>(mut reader: R, is_executable: bool) -> anyhow::Result<Self> {
-        let header = blob_header(is_executable);
+        let hasher = Hasher::new_blob(is_executable);
         let spooled_writer = SpooledTempFile::new(32 * 1024 * 1024);
-        let mut writer = HashWriter::with_header(header, spooled_writer);
+        let mut writer = HashWriter::with_hasher(hasher, spooled_writer);
         let length = crate::copy_wide(&mut reader, &mut writer)?;
 
         Ok(Blob {
@@ -408,14 +406,6 @@ impl Read for Blob {
     }
 }
 
-const fn blob_header(is_executable: bool) -> &'static [u8] {
-    if is_executable {
-        b"exec:"
-    } else {
-        b"blob:"
-    }
-}
-
 /// A list of possible file I/O strategies with the data contents, executable bit, and length.
 enum Strategy {
     Inline(Cursor<Vec<u8>>, bool, u64),
@@ -484,8 +474,8 @@ impl Tree {
 impl ContentAddressable for Tree {
     fn object_id(&self) -> ObjectId {
         let tree_hash = serde_json::to_vec(self).unwrap();
-        let mut hasher = id::Hasher::new();
-        hasher.update(b"tree:").update(&tree_hash[..]);
+        let mut hasher = id::Hasher::new_tree();
+        hasher.update(&tree_hash[..]);
         hasher.finish()
     }
 }
@@ -539,9 +529,8 @@ impl Package {
 impl ContentAddressable for Package {
     fn object_id(&self) -> ObjectId {
         let pkg_hash = serde_json::to_vec(self).unwrap();
-        let mut hasher = id::Hasher::new();
-        hasher.update(b"pkg:").update(&pkg_hash[..]);
-        hasher.finish()
+        let mut hasher = id::Hasher::new_package();
+        hasher.update(&pkg_hash[..]).finish()
     }
 }
 
@@ -569,8 +558,7 @@ pub struct Spec {
 impl ContentAddressable for Spec {
     fn object_id(&self) -> ObjectId {
         let spec_hash = serde_json::to_vec(self).unwrap();
-        let mut hasher = id::Hasher::new();
-        hasher.update(b"spec:").update(&spec_hash[..]);
-        hasher.finish()
+        let mut hasher = id::Hasher::new_spec();
+        hasher.update(&spec_hash[..]).finish()
     }
 }

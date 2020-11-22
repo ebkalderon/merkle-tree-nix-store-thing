@@ -99,13 +99,38 @@ impl Serialize for ObjectId {
 }
 
 /// An incremental hasher that computes object IDs.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Hasher(blake3::Hasher);
 
 impl Hasher {
-    /// Constructs a new `Hasher` with a regular hash function.
-    pub fn new() -> Self {
-        Hasher(blake3::Hasher::new())
+    /// Constructs a new `Hasher` for a blob object.
+    #[inline]
+    pub fn new_blob(is_executable: bool) -> Self {
+        Hasher::with_header(if is_executable { b"exec:" } else { b"blob:" })
+    }
+
+    /// Constructs a new `Hasher` for a tree object.
+    #[inline]
+    pub fn new_tree() -> Self {
+        Hasher::with_header(b"tree:")
+    }
+
+    /// Constructs a new `Hasher` for a package object.
+    #[inline]
+    pub fn new_package() -> Self {
+        Hasher::with_header(b"pkg:")
+    }
+
+    /// Constructs a new `Hasher` for a spec object.
+    #[inline]
+    pub fn new_spec() -> Self {
+        Hasher::with_header(b"spec:")
+    }
+
+    fn with_header(header: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(header);
+        Hasher(hasher)
     }
 
     /// Adds input bytes to the hash state. You can call this any number of times.
@@ -145,10 +170,8 @@ pub struct HashWriter<W> {
 }
 
 impl<W: Write> HashWriter<W> {
-    /// Creates a new `HashWriter<W>` with some header bytes prefixed to the hash input.
-    pub fn with_header(header: &[u8], inner: W) -> Self {
-        let mut hasher = Hasher::new();
-        hasher.update(header);
+    /// Creates a new `HashWriter<W>` with the given `Hasher` instance.
+    pub fn with_hasher(hasher: Hasher, inner: W) -> Self {
         HashWriter { inner, hasher }
     }
 
