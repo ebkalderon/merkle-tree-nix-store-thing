@@ -1,4 +1,4 @@
-//! Types of objects that comprise the Merkle tree.
+//! Types of Merkle tree objects.
 
 pub use self::id::{HashWriter, Hasher, ObjectId};
 
