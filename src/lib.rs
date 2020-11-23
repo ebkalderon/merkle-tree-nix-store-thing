@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
 
-use crate::remote::Remote;
+use crate::remote::{Objects, Remote};
 use crate::store::{Backend, Filesystem, Memory};
 
 pub mod remote;
@@ -18,9 +18,6 @@ pub mod remote;
 mod closure;
 mod object;
 mod store;
-
-/// A streaming iterator of tree objects.
-pub type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<Object>> + 'a>;
 
 /// A content-addressable store of installed software packages.
 #[derive(Debug)]

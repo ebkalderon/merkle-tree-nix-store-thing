@@ -2,9 +2,12 @@
 
 use std::time::Duration;
 
-use crate::{Closure, ObjectId, ObjectKind, Objects};
+use crate::{Closure, Object, ObjectId, ObjectKind};
 
 mod chunker;
+
+/// A streaming iterator of tree objects.
+pub type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<Object>> + 'a>;
 
 /// A remote source from which objects can be fetched or uploaded.
 pub trait Remote {
