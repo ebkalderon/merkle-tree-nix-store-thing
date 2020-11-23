@@ -38,7 +38,7 @@ impl Store<Filesystem> {
     #[inline]
     pub fn open<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let backend = Filesystem::open(path.into())?;
-        Ok(Store::with_backend(backend))
+        Ok(Store { backend })
     }
 
     /// Initializes a new store directory at `path` and opens it.
@@ -52,7 +52,7 @@ impl Store<Filesystem> {
     #[inline]
     pub fn init<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let backend = Filesystem::init(path.into())?;
-        Ok(Store::with_backend(backend))
+        Ok(Store { backend })
     }
 
     /// Initializes a store inside the empty directory referred to by `path` and opens it.
@@ -65,7 +65,7 @@ impl Store<Filesystem> {
     #[inline]
     pub fn init_bare<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let backend = Filesystem::init_bare(path.into())?;
-        Ok(Store::with_backend(backend))
+        Ok(Store { backend })
     }
 }
 
@@ -73,15 +73,13 @@ impl Store<Memory> {
     /// Constructs a new in-memory store. This is useful for testing.
     #[inline]
     pub fn in_memory() -> Self {
-        Store::with_backend(Memory::default())
+        Store {
+            backend: Memory::default(),
+        }
     }
 }
 
 impl<B: Backend> Store<B> {
-    fn with_backend(backend: B) -> Self {
-        Store { backend }
-    }
-
     /// Inserts a tree object into the store, returning its unique ID.
     ///
     /// Returns `Err` if the object could not be inserted into the store or an I/O error occurred.
