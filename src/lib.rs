@@ -2,7 +2,7 @@
 
 pub use self::closure::Closure;
 pub use self::object::*;
-pub use self::store::Iter;
+pub use self::store::Entries;
 
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
@@ -102,13 +102,13 @@ impl<B: Backend> Store<B> {
         self.backend.get_object(id, kind)
     }
 
-    /// Returns an iterator over all tree objects in this store.
+    /// Returns an iterator over the objects contained in this store.
     ///
     /// The order in which this iterator returns entries is platform and filesystem dependent.
     ///
     /// Returns `Err` if the store is corrupt or an I/O error occurred.
     #[inline]
-    pub fn iter_objects(&self) -> anyhow::Result<Iter<'_>> {
+    pub fn iter_objects(&self) -> anyhow::Result<Entries<'_>> {
         self.backend.iter_objects()
     }
 

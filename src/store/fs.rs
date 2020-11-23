@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context};
 use filetime::FileTime;
 
-use super::{Backend, Iter};
+use super::{Backend, Entries};
 use crate::object::{Blob, ContentAddressable, Entry, Object, ObjectId, ObjectKind, Package, Tree};
 
 const OBJECTS_SUBDIR: &str = "objects";
@@ -282,7 +282,7 @@ impl Backend for Filesystem {
         }
     }
 
-    fn iter_objects(&self) -> anyhow::Result<Iter<'_>> {
+    fn iter_objects(&self) -> anyhow::Result<Entries<'_>> {
         let entries = std::fs::read_dir(&self.objects_dir)?
             .filter_map(|r| r.ok())
             .filter_map(|entry| entry.path().read_dir().ok())

@@ -13,7 +13,7 @@ mod mem;
 /// An iterator of tree object entries in a store.
 ///
 /// The order in which this iterator returns entries is platform and filesystem dependent.
-pub type Iter<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, ObjectKind)>> + 'a>;
+pub type Entries<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, ObjectKind)>> + 'a>;
 
 /// A backend to the content-addressable store.
 pub trait Backend {
@@ -34,12 +34,12 @@ pub trait Backend {
     /// Returns `Err` if the object does not exist or an I/O error occurred.
     fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Object>;
 
-    /// Returns an iterator over all tree objects in this store.
+    /// Returns an iterator over the objects contained in this store.
     ///
     /// The order in which this iterator returns entries is platform and filesystem dependent.
     ///
     /// Returns `Err` if the store is corrupt or an I/O error occurred.
-    fn iter_objects(&self) -> anyhow::Result<Iter<'_>>;
+    fn iter_objects(&self) -> anyhow::Result<Entries<'_>>;
 
     /// Returns `Ok(true)` if the store contains a tree object with the given unique ID, or
     /// `Ok(false)` otherwise.

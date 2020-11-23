@@ -5,7 +5,7 @@ use std::io::Read;
 
 use anyhow::anyhow;
 
-use super::{Backend, Iter};
+use super::{Backend, Entries};
 use crate::object::{Blob, ContentAddressable, Object, ObjectId, ObjectKind, Package, Spec, Tree};
 
 /// Private replacement for `Object` which implements `Clone`.
@@ -95,7 +95,7 @@ impl Backend for Memory {
             .ok_or(anyhow!("object {} not found", id))
     }
 
-    fn iter_objects(&self) -> anyhow::Result<Iter<'_>> {
+    fn iter_objects(&self) -> anyhow::Result<Entries<'_>> {
         Ok(Box::new(
             self.objects.iter().map(|(&k, v)| (k, v.kind())).map(Ok),
         ))
