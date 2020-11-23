@@ -3,7 +3,6 @@
 pub use self::id::{HashWriter, Hasher, ObjectId};
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::{self, Debug, Display, Formatter};
 use std::io::{Cursor, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -461,26 +460,6 @@ impl ContentAddressable for Tree {
     }
 }
 
-/// The installed name for a package, which is the human-readable name for the package concatenated
-/// with its tree object ID and separated by a hyphen.
-///
-/// Executables and scripts inside a package directory may reference other installed packages on
-/// the system by absolute path, e.g. `<store>/packages/<name>-<id>/foo/bar.sh`, or by relative
-/// path, as in `../<name>-<id>/foo/bar.sh`.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct InstallName {
-    /// The human-readable name of the package.
-    pub name: SmolStr,
-    /// Unique hash of the `Package` object it derives from.
-    pub id: ObjectId,
-}
-
-impl Display for InstallName {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}-{}", self.name, self.id)
-    }
-}
-
 /// Represents a package object.
 ///
 /// Package objects have an output directory tree and may reference other packages at run-time or
@@ -499,11 +478,20 @@ pub struct Package {
 
 impl Package {
     /// Computes the directory name where the package should be installed.
-    pub fn install_name(&self) -> InstallName {
-        InstallName {
-            name: self.name.clone(),
-            id: self.object_id(),
-        }
+    ///
+    /// This is the human-readable name of the package concatenated with its tree object ID,
+    /// separated by a hyphen. Installed packages are located in the `packages` directory, and
+    /// their file contents may reference paths in other packages' directories via absolute paths.
+    ///
+    /// # Example
+    ///
+    /// Given an example package named `hello-1.0.0`, its install name string could be:
+    ///
+    /// ```text
+    /// hello-1.0.0-c17cb4d06cb51d69238b70e45766e9b265c7d70cb5c23e510ce2a940610c3e64
+    /// ```
+    pub fn install_name(&self) -> String {
+        format!("{}-{}", self.name, self.object_id())
     }
 }
 

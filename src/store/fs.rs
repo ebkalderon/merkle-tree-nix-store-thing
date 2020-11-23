@@ -92,7 +92,7 @@ impl Filesystem {
     }
 
     fn checkout(&mut self, pkg: &Package) -> anyhow::Result<()> {
-        let target_dir = self.packages_dir.join(pkg.install_name().to_string());
+        let target_dir = self.packages_dir.join(pkg.install_name());
 
         if target_dir.exists() {
             Ok(())
@@ -103,7 +103,7 @@ impl Filesystem {
                 .iter()
                 .filter_map(|&id| self.get_package(id).ok())
                 .map(|pkg| pkg.install_name())
-                .filter(|n| !self.packages_dir.join(n.to_string()).exists())
+                .filter(|name| !self.packages_dir.join(&name).exists())
                 .collect();
 
             if missing_refs.is_empty() {
