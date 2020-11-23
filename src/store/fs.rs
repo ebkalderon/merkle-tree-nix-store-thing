@@ -30,6 +30,7 @@ impl Filesystem {
     ///
     /// Returns `Err` if the path does not exist or is not a valid store directory.
     pub fn open(path: PathBuf) -> anyhow::Result<Self> {
+        let path = path.canonicalize()?;
         let objects_dir = path.join(OBJECTS_SUBDIR);
         let packages_dir = path.join(PACKAGES_SUBDIR);
 
@@ -74,6 +75,7 @@ impl Filesystem {
     /// directory, or the new store directory could not be initialized at `path` due to permissions
     /// or I/O errors.
     pub fn init_bare(path: PathBuf) -> anyhow::Result<Self> {
+        let path = path.canonicalize()?;
         let objects_dir = path.join(OBJECTS_SUBDIR);
         let packages_dir = path.join(PACKAGES_SUBDIR);
 
