@@ -4,9 +4,11 @@ pub use self::closure::Closure;
 pub use self::object::*;
 pub use self::store::Entries;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use anyhow::anyhow;
 
 use crate::remote::Remote;
 use crate::store::{Backend, Filesystem, Memory};
@@ -152,6 +154,76 @@ impl<B: Backend> Store<B> {
     #[inline]
     pub fn get_spec(&self, id: ObjectId) -> anyhow::Result<Spec> {
         self.backend.get_spec(id)
+    }
+}
+
+impl<B: Backend> Store<B> {
+    /// Installs an external directory in the store as a content-addressable package.
+    ///
+    /// Returns the ID of the installed package object.
+    fn install_package(&mut self, pkg_name: &str, out_dir: &Path) -> anyhow::Result<ObjectId> {
+        debug_assert!(!pkg_name.is_empty());
+        debug_assert!(out_dir.is_dir());
+        debug_assert!(out_dir.is_absolute());
+
+        let tree_id = self.install_dir_tree(out_dir, out_dir)?;
+        self.insert_object(Object::Package(Package {
+            name: pkg_name.into(),
+            system: "placeholder".to_string(), // FIXME: Need to define platform.
+            references: BTreeSet::new(),       // TODO: Need to collect references.
+            tree: tree_id,
+        }))
+    }
+
+    /// Recursively inserts the contents of the given directory in the store as a tree object,
+    /// patching out any self-references to `pkg_root` detected in blobs and symlinks by converting
+    /// them to relative paths. This is to maintain the content addressable invariant of the store.
+    ///
+    /// Returns the ID of the installed tree object.
+    fn install_dir_tree(&mut self, dir: &Path, pkg_root: &Path) -> anyhow::Result<ObjectId> {
+        debug_assert!(dir.starts_with(pkg_root));
+
+        let mut entries = BTreeMap::new();
+
+        let entries_iter = std::fs::read_dir(dir)?;
+        let mut children: Vec<_> = entries_iter.collect::<Result<_, _>>()?;
+        children.sort_by_cached_key(|entry| entry.path());
+
+        for child in children {
+            let path = child.path();
+            let file_name = path
+                .file_name()
+                .expect("path must have filename")
+                .to_str()
+                .ok_or_else(|| anyhow!("path {} contains invalid UTF-8", path.display()))?
+                .to_owned();
+
+            let file_type = child.file_type()?;
+            if file_type.is_dir() {
+                let id = self.install_dir_tree(&path, pkg_root)?;
+                entries.insert(file_name, Entry::Tree { id });
+            } else if file_type.is_file() {
+                // TODO: Need to implement patching of blob self-references.
+                // let id = patch_blob_self_refs(store, dir, root)?;
+                // entries.insert(file_name, Entry::Blob { id });
+            } else if file_type.is_symlink() {
+                let target = path.read_link()?;
+                let norm_target = target.canonicalize()?;
+
+                let target = if norm_target.starts_with(pkg_root) {
+                    pathdiff::diff_paths(norm_target, pkg_root).unwrap()
+                } else {
+                    target
+                };
+
+                entries.insert(file_name, Entry::Symlink { target });
+            } else {
+                unreachable!("entries can only be files, directories, or symlinks");
+            }
+        }
+
+        let tree = Object::Tree(Tree { entries });
+        self.insert_object(tree)
     }
 }
 
