@@ -309,11 +309,13 @@ impl Blob {
     }
 
     /// Returns `true` if this blob has its executable bit set.
+    #[inline]
     pub fn is_executable(&self) -> bool {
         self.is_executable
     }
 
     /// Returns the size of the blob, in bytes.
+    #[inline]
     pub fn len(&self) -> u64 {
         self.length
     }
