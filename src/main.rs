@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use foo::{Blob, Entry, Object, Package, Store, Tree};
+use foo::{Blob, Entry, Object, Package, Platform, Store, Tree};
 
 fn main() -> anyhow::Result<()> {
     // let mut store = Store::in_memory();
@@ -47,7 +47,7 @@ fn main() -> anyhow::Result<()> {
 
     let pkg_id = store.insert_object(Object::Package(Package {
         name: "foo".into(),
-        system: "x86_64-apple-darwin".into(),
+        system: Platform::host(),
         references: BTreeSet::new(),
         tree: main_tree_id,
     }))?;
@@ -57,7 +57,7 @@ fn main() -> anyhow::Result<()> {
         references.insert(pkg_id);
         Package {
             name: "bar".into(),
-            system: "x86_64-apple-darwin".into(),
+            system: Platform::host(),
             references,
             tree: similar_tree_id,
         }

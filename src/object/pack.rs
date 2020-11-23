@@ -215,10 +215,11 @@ mod tests {
     use std::io::{Seek, SeekFrom};
 
     use super::*;
-    use crate::{Entry, Package, Tree};
+    use crate::{platform, Entry, Package, Platform, Tree};
 
     const PACKAGE_NAME: &str = "example";
-    const PACKAGE_SYSTEM: &str = "x86_64-linux-gnu";
+    #[rustfmt::skip::macros(platform)]
+    const PACKAGE_SYSTEM: Platform = platform!(x86_64-linux-gnu);
 
     fn example_objects() -> Vec<Object> {
         let first = Object::Blob(Blob::from_bytes(b"hello".to_vec(), false));
@@ -241,7 +242,7 @@ mod tests {
         });
         let fourth = Object::Package(Package {
             name: PACKAGE_NAME.into(),
-            system: PACKAGE_SYSTEM.into(),
+            system: PACKAGE_SYSTEM,
             references: BTreeSet::new(),
             tree: third.object_id(),
         });

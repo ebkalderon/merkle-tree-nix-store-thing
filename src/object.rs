@@ -1,6 +1,7 @@
 //! Types of Merkle tree objects.
 
 pub use self::id::{HashWriter, Hasher, ObjectId};
+pub use self::platform::{Arch, Env, Os, Platform};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};
@@ -20,6 +21,7 @@ use self::spooled::SpooledTempFile;
 pub mod pack;
 
 mod id;
+mod platform;
 mod spooled;
 
 const BLOB_FILE_EXT: &str = "blob";
@@ -467,7 +469,7 @@ pub struct Package {
     /// The human-readable name.
     pub name: SmolStr,
     /// The target platform it supports.
-    pub system: String,
+    pub system: Platform,
     /// Any other packages it references at run-time.
     pub references: BTreeSet<ObjectId>,
     /// Output directory tree to be installed.
@@ -513,7 +515,9 @@ pub struct Spec {
     /// SPDX 2.1 expression.
     pub license: Option<SmolStr>,
     /// The target platform it supports.
-    pub system: String,
+    ///
+    /// If left unspecified, it is assumed to match the build host.
+    pub target: Option<Platform>,
     /// Packages required at run-time and build-time.
     pub dependencies: BTreeSet<ObjectId>,
     /// Packages only available at build-time.
