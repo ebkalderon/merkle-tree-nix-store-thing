@@ -1,7 +1,7 @@
 //! Filesystem-backed store implementation.
 
 use std::collections::BTreeSet;
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -147,7 +147,7 @@ impl Filesystem {
                     let mut src = self.objects_dir.join(id.to_path_buf());
                     src.set_extension(ObjectKind::Blob.as_str());
                     std::fs::hard_link(&src, &entry_path).map_err(|e| match e.kind() {
-                        std::io::ErrorKind::NotFound => anyhow!("blob object {} not found", id),
+                        io::ErrorKind::NotFound => anyhow!("blob object {} not found", id),
                         _ => e.into(),
                     })?;
                     println!(
@@ -193,7 +193,7 @@ impl Backend for Filesystem {
                 file.as_file_mut().sync_all()?;
                 match file.persist(p) {
                     Ok(_) => {}
-                    Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => {}
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -210,7 +210,7 @@ impl Backend for Filesystem {
         if !parent_dir.exists() {
             match std::fs::create_dir(parent_dir) {
                 Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e.into()),
             }
         }
