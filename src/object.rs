@@ -202,17 +202,13 @@ impl Blob {
         }
     }
 
-    /// Constructs a new `Blob` without hashing it, trusting the `object_id` to be correct.
-    pub(crate) fn from_bytes_unchecked(
-        input: Vec<u8>,
-        is_executable: bool,
-        object_id: ObjectId,
-    ) -> Self {
+    /// Constructs a new `Blob` without hashing it, trusting the `id` to be correct.
+    pub(crate) fn from_bytes_unchecked(input: Vec<u8>, is_executable: bool, id: ObjectId) -> Self {
         Blob {
             length: input.len() as u64,
             stream: Kind::Inline(Cursor::new(input)),
             is_executable,
-            object_id,
+            object_id: id,
         }
     }
 
