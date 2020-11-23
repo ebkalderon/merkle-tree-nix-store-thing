@@ -5,14 +5,9 @@ pub use self::object::*;
 pub use self::store::Entries;
 
 use std::collections::BTreeSet;
-use std::fmt::{self, Display, Formatter};
-use std::hash::Hash;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use anyhow::anyhow;
-
-use crate::closure::{compute_closure, compute_delta_closure, Include};
 use crate::remote::Remote;
 use crate::store::{Backend, Filesystem, Memory};
 
@@ -158,40 +153,17 @@ impl<B: Backend> Store<B> {
     pub fn get_spec(&self, id: ObjectId) -> anyhow::Result<Spec> {
         self.backend.get_spec(id)
     }
+}
 
+impl<B: Backend> Store<B> {
     /// Computes the filesystem closure for the given packages.
     ///
     /// Returns `Err` if any of the given object IDs do not exist, any of the object IDs do not
     /// refer to a `Package` object, a cycle or structural inconsistency is detected in the
     /// reference graph, or an I/O error occurred.
+    #[inline]
     pub fn compute_closure(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
-        let refs = pkgs
-            .into_iter()
-            .map(|id| Ref(id, ObjectKind::Package))
-            .collect();
-
-        let closure = compute_closure(refs, |Ref(id, kind)| match kind {
-            ObjectKind::Blob => Ok(BTreeSet::new()),
-            ObjectKind::Tree => {
-                let tree = self.get_tree(id)?;
-                Ok(tree.references().map(|(id, kind)| Ref(id, kind)).collect())
-            }
-            ObjectKind::Package => {
-                let p = self.get_package(id)?;
-                let tree_ref = Ref(p.tree, ObjectKind::Tree);
-                Ok(p.references
-                    .into_iter()
-                    .map(|id| Ref(id, ObjectKind::Package))
-                    .chain(std::iter::once(tree_ref))
-                    .collect())
-            }
-            ObjectKind::Spec => unimplemented!(),
-        })?;
-
-        Ok(closure
-            .into_iter()
-            .map(|Ref(id, kind)| (id, kind))
-            .collect())
+        closure::compute(self, pkgs)
     }
 
     /// Computes a delta closure which only contains objects that are missing on the remote store.
@@ -199,51 +171,12 @@ impl<B: Backend> Store<B> {
     /// Returns `Err` if any of the given object IDs do not exist in this store, any of the object
     /// IDs do not refer to a `Package` object, a cycle or structural inconsistency is detected in
     /// the reference graph, or an I/O error occurred.
+    #[inline]
     pub fn compute_delta<R>(&self, pkgs: BTreeSet<ObjectId>, dest: &R) -> anyhow::Result<Closure>
     where
         R: Remote + ?Sized,
     {
-        // This delta computation technique was shamelessly stolen from Git, as documented
-        // meticulously in these two pages:
-        //
-        // https://matthew-brett.github.io/curious-git/git_push_algorithm.html
-        // https://github.com/git/git/blob/master/Documentation/technical/pack-protocol.txt
-
-        let missing_pkgs = compute_delta_closure(pkgs, |id| {
-            let p = self.get_package(id)?;
-            if dest.contains_object(&id, Some(ObjectKind::Package))? {
-                Ok(Include::No)
-            } else {
-                Ok(Include::Yes(p.references))
-            }
-        })?;
-
-        let mut trees = BTreeSet::new();
-        for id in &missing_pkgs {
-            let p = self.get_package(*id)?;
-            trees.insert(Ref(p.tree, ObjectKind::Tree));
-        }
-
-        let missing_content = compute_delta_closure(trees, |Ref(id, kind)| match kind {
-            ObjectKind::Blob | ObjectKind::Tree if dest.contains_object(&id, Some(kind))? => {
-                Ok(Include::No)
-            }
-            ObjectKind::Blob => Ok(Include::Yes(BTreeSet::new())),
-            ObjectKind::Tree => {
-                let tree = self.get_tree(id)?;
-                let refs = tree.references();
-                Ok(Include::Yes(refs.map(|(id, k)| Ref(id, k)).collect()))
-            }
-            ObjectKind::Package => Err(anyhow!("tree object cannot reference package object")),
-            ObjectKind::Spec => unimplemented!(),
-        })?;
-
-        Ok(missing_pkgs
-            .into_iter()
-            .map(|id| Ref(id, ObjectKind::Package))
-            .chain(missing_content)
-            .map(|Ref(id, kind)| (id, kind))
-            .collect())
+        closure::delta(self, dest, pkgs)
     }
 
     /// Iterates over the closure and lazily yields each element in reverse topological order.
@@ -292,18 +225,6 @@ impl<B: Backend> Remote for Store<B> {
         }
 
         Ok(())
-    }
-}
-
-/// Newtype used only when computing closures.
-///
-/// This only exists because Rust disallows deriving/implementing traits for tuples.
-#[derive(Clone, Copy, Eq, Hash, PartialEq, PartialOrd, Ord)]
-struct Ref(ObjectId, ObjectKind);
-
-impl Display for Ref {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        Display::fmt(&self.0, f)
     }
 }
 

@@ -1,13 +1,13 @@
 //! Types and helper functions for computing closures.
 
 use std::collections::{BTreeSet, HashSet};
-use std::fmt::Display;
 use std::hash::Hash;
 use std::iter::FromIterator;
 
 use anyhow::anyhow;
 
-use crate::{ObjectId, ObjectKind};
+use crate::remote::Remote;
+use crate::{Backend, ObjectId, ObjectKind, Store};
 
 /// A filesystem closure for one or more packages.
 ///
@@ -35,10 +35,90 @@ impl Iterator for Closure {
     }
 }
 
+/// Compute the filesystem closure for the given package set.
+pub fn compute<B: Backend>(store: &Store<B>, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
+    let refs = pkgs
+        .into_iter()
+        .map(|id| (id, ObjectKind::Package))
+        .collect();
+
+    let closure = topo_sort(refs, |(id, kind)| match kind {
+        ObjectKind::Blob => Ok(BTreeSet::new()),
+        ObjectKind::Tree => {
+            let tree = store.get_tree(id)?;
+            Ok(tree.references().collect())
+        }
+        ObjectKind::Package => {
+            let p = store.get_package(id)?;
+            let tree_ref = (p.tree, ObjectKind::Tree);
+            Ok(p.references
+                .into_iter()
+                .map(|id| (id, ObjectKind::Package))
+                .chain(std::iter::once(tree_ref))
+                .collect())
+        }
+        ObjectKind::Spec => unimplemented!(),
+    })?;
+
+    Ok(Closure(closure))
+}
+
+/// Resolve the delta closure for the given package set between `src` and `dst`.
+pub fn delta<B, R>(src: &Store<B>, dst: &R, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure>
+where
+    B: Backend,
+    R: Remote + ?Sized,
+{
+    // This delta computation technique was shamelessly stolen from Git, as documented
+    // meticulously in these two pages:
+    //
+    // https://matthew-brett.github.io/curious-git/git_push_algorithm.html
+    // https://github.com/git/git/blob/master/Documentation/technical/pack-protocol.txt
+
+    let refs = pkgs
+        .into_iter()
+        .map(|id| (id, ObjectKind::Package))
+        .collect();
+
+    let missing_pkgs = topo_sort_partial(refs, |(id, kind)| {
+        let p = src.get_package(id)?;
+        if dst.contains_object(&id, Some(kind))? {
+            Ok(Include::No)
+        } else {
+            let refs = p.references.into_iter().map(|id| (id, kind)).collect();
+            Ok(Include::Yes(refs))
+        }
+    })?;
+
+    let mut trees = BTreeSet::new();
+    for (id, _) in &missing_pkgs {
+        let p = src.get_package(*id)?;
+        trees.insert((p.tree, ObjectKind::Tree));
+    }
+
+    let missing_content = topo_sort_partial(trees, |(id, kind)| match kind {
+        ObjectKind::Blob | ObjectKind::Tree if dst.contains_object(&id, Some(kind))? => {
+            Ok(Include::No)
+        }
+        ObjectKind::Blob => Ok(Include::Yes(BTreeSet::new())),
+        ObjectKind::Tree => {
+            let tree = src.get_tree(id)?;
+            Ok(Include::Yes(tree.references().collect()))
+        }
+        ObjectKind::Package => Err(anyhow!("tree object cannot reference package object")),
+        ObjectKind::Spec => unimplemented!(),
+    })?;
+
+    Ok(missing_pkgs.into_iter().chain(missing_content).collect())
+}
+
+/// A node in the reference graph.
+type Node = (ObjectId, ObjectKind);
+
 /// Control flow for the `get_children` closure.
-pub enum Include<T> {
+enum Include {
     /// Indicates that the node should be included in the closure and descend into its child nodes.
-    Yes(BTreeSet<T>),
+    Yes(BTreeSet<Node>),
     /// Indicates that the node should not be included in the closure.
     No,
 }
@@ -50,40 +130,37 @@ pub enum Include<T> {
 ///
 /// This sorting is important because it ensures objects and packages get inserted into the store
 /// in a consistent order, where all references are inserted into the store before their referrers.
-pub fn compute_closure<T, F>(items: BTreeSet<T>, mut get_children: F) -> anyhow::Result<Vec<T>>
+fn topo_sort<F>(items: BTreeSet<Node>, mut get_children: F) -> anyhow::Result<Vec<Node>>
 where
-    T: Copy + Display + Eq + Hash + Ord,
-    F: FnMut(T) -> anyhow::Result<BTreeSet<T>>,
+    F: FnMut(Node) -> anyhow::Result<BTreeSet<Node>>,
 {
-    compute_delta_closure(items, |item| get_children(item).map(Include::Yes))
+    topo_sort_partial(items, |item| get_children(item).map(Include::Yes))
 }
 
-/// Similar to `compute_closure()`, but with the option to skip nodes and return a partial result.
+/// Similar to `topo_sort()`, but with the option to skip nodes and return a partial result.
 ///
 /// If `get_children` returns `Ok(Include::Yes(children))`, it indicates that we should
 /// include the current node in the closure and descend further in the child nodes. However, if
 /// `get_children` returns `Ok(Include::No)`, it means that we should not include the
 /// current node in the closure and not attempt to descend any further.
-pub fn compute_delta_closure<T, F>(items: BTreeSet<T>, get_children: F) -> anyhow::Result<Vec<T>>
+fn topo_sort_partial<F>(items: BTreeSet<Node>, get_children: F) -> anyhow::Result<Vec<Node>>
 where
-    T: Copy + Display + Eq + Hash + Ord,
-    F: FnMut(T) -> anyhow::Result<Include<T>>,
+    F: FnMut(Node) -> anyhow::Result<Include>,
 {
     // Use a struct with fields and methods because recursive closures are impossible in Rust.
-    struct ClosureBuilder<'a, T: Eq + Hash + Ord, F> {
-        initial_items: &'a BTreeSet<T>,
+    struct ClosureBuilder<'a, F> {
+        initial_items: &'a BTreeSet<Node>,
         get_children: F,
-        visited: HashSet<T>,
-        parents: HashSet<T>,
-        topo_sorted_items: Vec<T>,
+        visited: HashSet<Node>,
+        parents: HashSet<Node>,
+        topo_sorted_items: Vec<Node>,
     }
 
-    impl<'a, T, F> ClosureBuilder<'a, T, F>
+    impl<'a, F> ClosureBuilder<'a, F>
     where
-        T: Copy + Display + Eq + Hash + Ord,
-        F: FnMut(T) -> anyhow::Result<Include<T>>,
+        F: FnMut(Node) -> anyhow::Result<Include>,
     {
-        pub fn new(initial_items: &'a BTreeSet<T>, get_children: F) -> Self {
+        pub fn new(initial_items: &'a BTreeSet<Node>, get_children: F) -> Self {
             ClosureBuilder {
                 initial_items,
                 get_children,
@@ -93,7 +170,7 @@ where
             }
         }
 
-        pub fn compute(mut self) -> anyhow::Result<Vec<T>> {
+        pub fn compute(mut self) -> anyhow::Result<Vec<Node>> {
             for item in self.initial_items {
                 self.visit_dfs(*item, None)?;
             }
@@ -103,13 +180,13 @@ where
             Ok(self.topo_sorted_items)
         }
 
-        fn visit_dfs(&mut self, item: T, parent_item: Option<T>) -> anyhow::Result<()> {
+        fn visit_dfs(&mut self, item: Node, parent_item: Option<Node>) -> anyhow::Result<()> {
             // Reference cycles are forbidden, so exit early if one is found.
             if self.parents.contains(&item) {
                 return Err(anyhow!(
                     "detected cycle in closure reference graph: {} -> {}",
-                    item,
-                    parent_item.unwrap()
+                    item.0,
+                    parent_item.unwrap().0
                 ));
             }
 
