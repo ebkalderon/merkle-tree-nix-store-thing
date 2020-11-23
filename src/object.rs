@@ -28,9 +28,6 @@ const TREE_FILE_EXT: &str = "tree";
 const PACKAGE_FILE_EXT: &str = "pkg";
 const SPEC_FILE_EXT: &str = "spec";
 
-/// Streaming iterator of tree objects.
-pub type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<Object>> + 'a>;
-
 /// A trait designating objects belonging to a `Store`.
 ///
 /// These objects are nodes in a Merkle tree and can be stored and retrieved by their `ObjectId`.

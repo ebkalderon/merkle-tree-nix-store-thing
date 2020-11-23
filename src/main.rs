@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use foo::store::Store;
-use foo::{Blob, Entry, Object, Package, Tree};
+use foo::{Blob, Entry, Object, Package, Store, Tree};
 
 fn main() -> anyhow::Result<()> {
     // let mut store = Store::in_memory();
