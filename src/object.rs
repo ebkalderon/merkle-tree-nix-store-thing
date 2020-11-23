@@ -312,22 +312,6 @@ impl Blob {
         })
     }
 
-    /// Creates a `Blob` from a reader without hashing it, trusting the `object_id` to be correct.
-    pub(crate) fn from_reader_unchecked<R: Read>(
-        mut reader: R,
-        is_executable: bool,
-        object_id: ObjectId,
-    ) -> anyhow::Result<Self> {
-        let mut writer = SpooledTempFile::new(32 * 1024 * 1024);
-        let length = crate::copy_wide(&mut reader, &mut writer)?;
-        Ok(Blob {
-            stream: Kind::Spooled(writer),
-            is_executable,
-            length,
-            object_id,
-        })
-    }
-
     /// Returns `true` if this blob has its executable bit set.
     pub fn is_executable(&self) -> bool {
         self.is_executable

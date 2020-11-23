@@ -161,31 +161,42 @@ impl<R: Read> PackReader<R> {
         }
 
         let (object_id, kind, len) = parse_header(header)?;
-        match kind {
+        let object = match kind {
             ObjectKind::Blob | ObjectKind::Exec => {
                 let reader = (&mut self.inner).take(len);
                 let is_executable = kind == ObjectKind::Exec;
-                let blob = Blob::from_reader_unchecked(reader, is_executable, object_id)?;
-                Ok(Some(Object::Blob(blob)))
+                let blob = Blob::from_reader(reader, is_executable)?;
+                Object::Blob(blob)
             }
             ObjectKind::Tree => {
                 let mut buffer = vec![0u8; len as usize].into_boxed_slice();
                 self.inner.read_exact(&mut buffer)?;
                 let tree = serde_json::from_slice(&buffer)?;
-                Ok(Some(Object::Tree(tree)))
+                Object::Tree(tree)
             }
             ObjectKind::Package => {
                 let mut buffer = vec![0u8; len as usize].into_boxed_slice();
                 self.inner.read_exact(&mut buffer)?;
                 let pkg = serde_json::from_slice(&buffer)?;
-                Ok(Some(Object::Package(pkg)))
+                Object::Package(pkg)
             }
             ObjectKind::Spec => {
                 let mut buffer = vec![0u8; len as usize].into_boxed_slice();
                 self.inner.read_exact(&mut buffer)?;
                 let spec = serde_json::from_slice(&buffer)?;
-                Ok(Some(Object::Spec(spec)))
+                Object::Spec(spec)
             }
+        };
+
+        if object.object_id() == object_id {
+            Ok(Some(object))
+        } else {
+            Err(anyhow!(
+                "hash mismatch: {:?} hashed to {}, but pack file lists {}",
+                object.kind(),
+                object.object_id(),
+                object_id
+            ))
         }
     }
 }
