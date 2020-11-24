@@ -93,13 +93,13 @@ impl Filesystem {
         })
     }
 
-    fn checkout(&mut self, pkg: &Package) -> anyhow::Result<()> {
+    fn instantiate(&mut self, pkg: &Package) -> anyhow::Result<()> {
         let target_dir = self.packages_dir.join(pkg.install_name());
 
         if target_dir.exists() {
             Ok(())
         } else {
-            // Ensure all object references are present in the store before checkout.
+            // Ensure all object references are present in the store before instantiation.
             let missing_refs: BTreeSet<_> = pkg
                 .references
                 .iter()
@@ -116,7 +116,7 @@ impl Filesystem {
                 let temp_dir = tempfile::tempdir_in("/var/tmp")?;
                 self.write_tree(temp_dir.path(), tree)?;
 
-                // Atomically move the checked out package directory to its final location.
+                // Atomically move the package directory to its final location.
                 let finished_dir = temp_dir.into_path();
                 match std::fs::rename(finished_dir, &target_dir) {
                     Ok(()) => Ok(()),
@@ -125,7 +125,7 @@ impl Filesystem {
                 }
             } else {
                 Err(anyhow!(
-                    "failed to checkout package, missing: {:?}",
+                    "failed to instantiate package, missing: {:?}",
                     missing_refs
                 ))
             }
@@ -228,7 +228,7 @@ impl Backend for Filesystem {
                 })?;
             }
             Object::Package(pkg) => {
-                self.checkout(&pkg)?;
+                self.instantiate(&pkg)?;
                 write_object(&path, 0o444, |mut file| {
                     serde_json::to_writer(&mut file, &pkg)?;
                     file.flush()?;

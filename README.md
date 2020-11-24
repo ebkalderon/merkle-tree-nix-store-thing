@@ -9,10 +9,10 @@ store design and not an intensional design.
 * Every unique file in the store is stored as a sparse object in the
   content-addressable `objects` directory, similar to Git and OSTree. Hashes are
   based on BLAKE3 instead of SHA256 for performance and security.
-* Realized derivations (aka "checkouts") are, ahem, _checked out_ into the
-  `packages` directory.
+* Realized derivations are instantiated in the `packages` directory,
+  reconstructed from the objects in the Merkle tree.
 * Files are transparently deduplicated on disk using hard links without
-  requiring regular optimization passes, like Nix.
+  requiring regular optimization passes.
 
 ## Future work
 
