@@ -5,13 +5,12 @@ pub use self::platform::{Arch, Env, Os, Platform};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display, Formatter};
-use std::io::{Cursor, Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::io::{self, Cursor, Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::anyhow;
-use filetime::FileTime;
 use memmap::{Mmap, MmapOptions};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -321,51 +320,42 @@ impl Blob {
 
     /// Persists the blob to disk with as little redundant copying as possible.
     pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
-        if !dest.exists() {
-            let mode = if self.is_executable { 0o544 } else { 0o444 };
-            let perms = std::fs::Permissions::from_mode(mode);
+        let mode = if self.is_executable { 0o544 } else { 0o444 };
 
-            match self.stream {
-                Kind::Inline(inner) => {
-                    let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
-                    temp.write_all(inner.get_ref())?;
-                    temp.flush()?;
-
-                    temp.as_file_mut().set_permissions(perms)?;
-                    filetime::set_file_mtime(temp.path(), FileTime::zero())?;
-
-                    temp.persist(dest)?;
-                }
-                Kind::Mmap(mut inner) => {
-                    let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
-                    crate::copy_wide(&mut inner, &mut temp)?;
-
-                    temp.as_file_mut().set_permissions(perms)?;
-                    filetime::set_file_mtime(temp.path(), FileTime::zero())?;
-
-                    temp.persist(dest)?;
-                }
-                Kind::Spooled(inner) => inner.persist(dest, perms)?,
-                Kind::File(mut inner) => {
-                    inner.as_file_mut().set_permissions(perms)?;
-                    filetime::set_file_mtime(inner.path(), FileTime::zero())?;
-                    inner.persist(dest)?;
-                }
-                Kind::StoreFile(_, src) if src == dest => panic!("cannot persist file to itself"),
-                Kind::StoreFile(_, src) => {
-                    let file_name = src.file_name().unwrap();
-                    let temp_path = PathBuf::from("/var/tmp").join(file_name);
-                    std::fs::copy(src, &temp_path)?;
-
-                    std::fs::set_permissions(&temp_path, perms)?;
-                    filetime::set_file_mtime(&temp_path, FileTime::zero())?;
-
-                    std::fs::rename(&temp_path, dest)?;
-                }
+        let result = match self.stream {
+            Kind::Inline(inner) => {
+                let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
+                temp.write_all(inner.get_ref())?;
+                temp.flush()?;
+                normalize_perms(temp.path(), mode)?;
+                temp.persist(dest).map(|_| {}).map_err(|e| e.error)
             }
-        }
+            Kind::Mmap(mut inner) => {
+                let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
+                crate::copy_wide(&mut inner, &mut temp)?;
+                normalize_perms(temp.path(), mode)?;
+                temp.persist(dest).map(|_| {}).map_err(|e| e.error)
+            }
+            Kind::Spooled(inner) => inner.persist(dest, mode),
+            Kind::File(inner) => {
+                normalize_perms(inner.path(), mode)?;
+                inner.persist(dest).map(|_| {}).map_err(|e| e.error)
+            }
+            Kind::StoreFile(_, src) if src == dest => panic!("cannot persist file to itself"),
+            Kind::StoreFile(_, src) => {
+                let file_name = src.file_name().unwrap();
+                let temp_path = PathBuf::from("/var/tmp").join(file_name);
+                std::fs::copy(src, &temp_path)?;
+                normalize_perms(&temp_path, mode)?;
+                std::fs::rename(&temp_path, dest)
+            }
+        };
 
-        Ok(())
+        match result {
+            Ok(_) => Ok(()),
+            Err(_) if dest.is_file() => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
@@ -376,7 +366,7 @@ impl ContentAddressable for Blob {
 }
 
 impl Read for Blob {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.stream {
             Kind::Inline(ref mut inner) => inner.read(buf),
             Kind::Mmap(ref mut inner) => inner.read(buf),
@@ -449,6 +439,11 @@ impl Tree {
             Entry::Blob { id } => Some((*id, ObjectKind::Blob)),
             Entry::Symlink { .. } => None,
         })
+    }
+
+    /// Persists object to disk as a read-only JSON file located at `dest`.
+    pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
+        persist_json(&self, dest)
     }
 }
 
@@ -561,6 +556,11 @@ impl Package {
     pub fn install_name(&self) -> InstallName {
         InstallName(format!("{}-{}", self.name, self.object_id()))
     }
+
+    /// Persists object to disk as a read-only JSON file located at `dest`.
+    pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
+        persist_json(&self, dest)
+    }
 }
 
 impl ContentAddressable for Package {
@@ -593,9 +593,40 @@ pub struct Spec {
     pub builder: String,
 }
 
+impl Spec {
+    /// Persists object to disk as a read-only JSON file located at `dest`.
+    pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
+        persist_json(&self, dest)
+    }
+}
+
 impl ContentAddressable for Spec {
     fn object_id(&self) -> ObjectId {
         let json = serde_json::to_vec(self).unwrap();
         id::Hasher::new_spec().update(&json).finish()
     }
+}
+
+/// Persists `val` to disk as a read-only JSON file located at `dest`.
+fn persist_json<T: Serialize>(val: &T, dest: &Path) -> anyhow::Result<()> {
+    let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
+    serde_json::to_writer(&mut temp, val)?;
+    temp.flush()?;
+    normalize_perms(temp.path(), 0o444)?;
+
+    match temp.persist(dest) {
+        Ok(_) => Ok(()),
+        Err(_) if dest.is_file() => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Normalizes file permissons for `p` and sets all timestamps to January 1st, 1970.
+fn normalize_perms(p: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(mode);
+    std::fs::set_permissions(p, perms)?;
+    filetime::set_file_atime(p, filetime::FileTime::zero())?;
+    filetime::set_file_mtime(p, filetime::FileTime::zero())?;
+    Ok(())
 }

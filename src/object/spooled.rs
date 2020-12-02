@@ -1,10 +1,7 @@
 //! Similar to `tempfile::SpooledTempFile` except it can be persisted to disk.
 
-use std::fs::Permissions;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
-
-use filetime::FileTime;
 
 #[derive(Debug)]
 enum Storage {
@@ -33,19 +30,17 @@ impl SpooledTempFile {
     /// If the buffer is held in main memory, it is copied to a temporary file and atomically moved
     /// to the final destination. If the buffer has already spilled over to disk, the already
     /// existing temporary file is simply moved to the final destination, no extra copying needed.
-    pub fn persist(self, dest: &Path, perms: Permissions) -> anyhow::Result<()> {
+    pub fn persist(self, dest: &Path, mode: u32) -> io::Result<()> {
         match self.inner {
             Storage::InMemory(cursor) => {
                 let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                 temp.write_all(cursor.get_ref())?;
                 temp.flush()?;
-                temp.as_file_mut().set_permissions(perms)?;
-                filetime::set_file_mtime(temp.path(), FileTime::zero())?;
+                super::normalize_perms(temp.path(), mode)?;
                 temp.persist(dest)?;
             }
-            Storage::OnDisk(mut file) => {
-                file.as_file_mut().set_permissions(perms)?;
-                filetime::set_file_mtime(file.path(), FileTime::zero())?;
+            Storage::OnDisk(file) => {
+                super::normalize_perms(file.path(), mode)?;
                 file.persist(dest)?;
             }
         }

@@ -1,15 +1,13 @@
 //! Filesystem-backed store implementation.
 
 use std::collections::BTreeSet;
-use std::io::{self, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
 use filetime::FileTime;
 
 use super::{Backend, Entries};
-use crate::object::{Blob, ContentAddressable, Entry, Object, ObjectId, ObjectKind, Package, Tree};
+use crate::{Blob, ContentAddressable, Entry, Object, ObjectId, ObjectKind, Package, Tree};
 
 const OBJECTS_SUBDIR: &str = "objects";
 const PACKAGES_SUBDIR: &str = "packages";
@@ -149,7 +147,7 @@ impl Filesystem {
                     let mut src = self.objects_dir.join(id.to_path_buf());
                     src.set_extension(ObjectKind::Blob.as_str());
                     std::fs::hard_link(&src, &entry_path).map_err(|e| match e.kind() {
-                        io::ErrorKind::NotFound => anyhow!("blob object {} not found", id),
+                        std::io::ErrorKind::NotFound => anyhow!("blob object {} not found", id),
                         _ => e.into(),
                     })?;
                     println!(
@@ -180,68 +178,29 @@ impl Filesystem {
 
 impl Backend for Filesystem {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
-        fn write_object<F>(p: &Path, perms: u32, mut write_fn: F) -> anyhow::Result<()>
-        where
-            F: FnMut(&std::fs::File) -> anyhow::Result<()>,
-        {
-            if !p.exists() {
-                let mut file = tempfile::NamedTempFile::new_in("/var/tmp")?;
-                write_fn(&file.as_file())?;
-
-                let perms = std::fs::Permissions::from_mode(perms);
-                file.as_file_mut().set_permissions(perms)?;
-                filetime::set_file_mtime(file.path(), FileTime::zero())?;
-
-                file.as_file_mut().sync_all()?;
-                match file.persist(p) {
-                    Ok(_) => {}
-                    Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => {}
-                    Err(e) => return Err(e.into()),
-                }
-            }
-
-            Ok(())
-        }
-
         // Prepare to serialize object into: `<store>/objects/ab/cdef01234567890.<kind>`
         let id = o.object_id();
         let mut path = self.objects_dir.join(id.to_path_buf());
+        path.set_extension(o.kind().as_str());
 
         // Create the two-character parent directory, if it doesn't already exist.
         let parent_dir = path.parent().expect("path cannot be at filesystem root");
         if !parent_dir.exists() {
             match std::fs::create_dir(parent_dir) {
                 Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(_) if parent_dir.is_dir() => {}
                 Err(e) => return Err(e.into()),
             }
         }
 
-        path.set_extension(o.kind().as_str());
         match o {
             Object::Blob(blob) => blob.persist(&path)?,
-            Object::Tree(tree) => {
-                write_object(&path, 0o444, |mut file| {
-                    serde_json::to_writer(&mut file, &tree)?;
-                    file.flush()?;
-                    Ok(())
-                })?;
-            }
+            Object::Tree(tree) => tree.persist(&path)?,
             Object::Package(pkg) => {
                 self.instantiate(&pkg)?;
-                write_object(&path, 0o444, |mut file| {
-                    serde_json::to_writer(&mut file, &pkg)?;
-                    file.flush()?;
-                    Ok(())
-                })?;
+                pkg.persist(&path)?;
             }
-            Object::Spec(spec) => {
-                write_object(&path, 0o444, |mut file| {
-                    serde_json::to_writer(&mut file, &spec)?;
-                    file.flush()?;
-                    Ok(())
-                })?;
-            }
+            Object::Spec(spec) => spec.persist(&path)?,
         }
 
         Ok(id)
