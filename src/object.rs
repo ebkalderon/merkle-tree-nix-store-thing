@@ -4,6 +4,7 @@ pub use self::id::{HashWriter, Hasher, ObjectId};
 pub use self::platform::{Arch, Env, Os, Platform};
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::{self, Display, Formatter};
 use std::io::{Cursor, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -38,7 +39,7 @@ pub trait ContentAddressable {
 }
 
 /// A list specifying all types of `Store` objects.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ObjectKind {
     /// Plain file or executable.
     Blob,
@@ -460,6 +461,87 @@ impl ContentAddressable for Tree {
     }
 }
 
+/// Directory name of an installed package.
+///
+/// This is the human-readable name of the package concatenated with its object ID, separated
+/// by a hyphen. Installed packages are located in the `packages` directory, and their file
+/// contents may reference paths in other packages' directories via absolute paths.
+///
+/// `InstallName` implements `AsRef<Path>` so it can be treated identically to `std::path::Path`.
+///
+/// # Example
+///
+/// Given an example package named `hello-1.0.0`, its install name string could be:
+///
+/// ```text
+/// hello-1.0.0-fd53fe2392dc260e9cf414a39aeb43641c10ab48a726c58e76d06a7fe443d660
+/// ```
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct InstallName(String);
+
+impl InstallName {
+    /// Returns the human-readable name component of the `InstallName`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use foo::{Arch, Env, Os, Package, Platform};
+    /// #
+    /// # let pkg = Package {
+    /// #     name: "hello-1.0.0".into(),
+    /// #     system: Platform { arch: Arch::X86_64, os: Os::Linux(Env::Gnu) },
+    /// #     references: Default::default(),
+    /// #     tree: "0000000000000000000000000000000000000000000000000000000000000000".parse().unwrap(),
+    /// # };
+    /// #
+    /// let install_name = pkg.install_name();
+    /// assert_eq!(install_name.name(), "hello-1.0.0");
+    /// ```
+    pub fn name(&self) -> &str {
+        self.0.rsplitn(2, '-').nth(1).unwrap()
+    }
+
+    /// Returns the package ID component of the `InstallName`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use foo::{Arch, Env, ObjectId, Os, Package, Platform};
+    /// #
+    /// # let pkg = Package {
+    /// #     name: "hello-1.0.0".into(),
+    /// #     system: Platform { arch: Arch::X86_64, os: Os::Linux(Env::Gnu) },
+    /// #     references: Default::default(),
+    /// #     tree: "0000000000000000000000000000000000000000000000000000000000000000".parse().unwrap(),
+    /// # };
+    /// #
+    /// let install_name = pkg.install_name();
+    /// let id: ObjectId = "fd53fe2392dc260e9cf414a39aeb43641c10ab48a726c58e76d06a7fe443d660".parse().unwrap();
+    /// assert_eq!(install_name.id(), id);
+    /// ```
+    pub fn id(&self) -> ObjectId {
+        self.0.rsplitn(2, '-').nth(0).unwrap().parse().unwrap()
+    }
+}
+
+impl AsRef<Path> for InstallName {
+    fn as_ref(&self) -> &Path {
+        self.0.as_ref()
+    }
+}
+
+impl Display for InstallName {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<InstallName> for String {
+    fn from(name: InstallName) -> Self {
+        name.0
+    }
+}
+
 /// Represents a package object.
 ///
 /// Package objects have an output directory tree and may reference other packages at run-time or
@@ -478,20 +560,8 @@ pub struct Package {
 
 impl Package {
     /// Computes the directory name where the package should be installed.
-    ///
-    /// This is the human-readable name of the package concatenated with its tree object ID,
-    /// separated by a hyphen. Installed packages are located in the `packages` directory, and
-    /// their file contents may reference paths in other packages' directories via absolute paths.
-    ///
-    /// # Example
-    ///
-    /// Given an example package named `hello-1.0.0`, its install name string could be:
-    ///
-    /// ```text
-    /// hello-1.0.0-c17cb4d06cb51d69238b70e45766e9b265c7d70cb5c23e510ce2a940610c3e64
-    /// ```
-    pub fn install_name(&self) -> String {
-        format!("{}-{}", self.name, self.object_id())
+    pub fn install_name(&self) -> InstallName {
+        InstallName(format!("{}-{}", self.name, self.object_id()))
     }
 }
 
