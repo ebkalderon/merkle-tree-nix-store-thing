@@ -7,7 +7,7 @@ use crate::{Closure, Object, ObjectId, ObjectKind};
 mod chunker;
 
 /// A streaming iterator of tree objects.
-pub type Objects<'a> = Box<dyn Iterator<Item = anyhow::Result<Object>> + 'a>;
+pub type ObjectStream<'a> = Box<dyn Iterator<Item = anyhow::Result<Object>> + 'a>;
 
 /// A remote source from which objects can be fetched or uploaded.
 pub trait Remote {
@@ -25,13 +25,13 @@ pub trait Remote {
     ///
     /// Returns `Err` if a requested object does not exist on the remote, the connection to the
     /// remote was lost, or an I/O error occurred.
-    fn download_objects(&self, closure: Closure) -> anyhow::Result<Objects<'_>>;
+    fn download_objects(&self, closure: Closure) -> anyhow::Result<ObjectStream<'_>>;
 
     /// Copies the stream of objects to the remote source.
     ///
     /// Returns `Err` if any element of `objects` is `Err`, the connection to the remote was lost,
     /// or an I/O error occurred.
-    fn upload_objects(&mut self, objects: Objects) -> anyhow::Result<()>;
+    fn upload_objects(&mut self, objects: ObjectStream) -> anyhow::Result<()>;
 
     /// Sends a ping request to the remote source and measures the latency.
     fn ping(&self) -> anyhow::Result<Duration> {

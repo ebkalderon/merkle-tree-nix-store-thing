@@ -204,16 +204,6 @@ impl Blob {
         }
     }
 
-    /// Constructs a new `Blob` without hashing it, trusting the `id` to be correct.
-    pub(crate) fn from_bytes_unchecked(input: Vec<u8>, is_executable: bool, id: ObjectId) -> Self {
-        Blob {
-            length: input.len() as u64,
-            stream: Kind::Inline(Cursor::new(input)),
-            is_executable,
-            object_id: id,
-        }
-    }
-
     /// Hashes and returns a new `Blob` object from the file located at `path`.
     ///
     /// This constructor is more efficent than passing `std::fs::File` into `Blob::from_reader()`.

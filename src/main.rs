@@ -4,7 +4,7 @@ use foo::{Blob, Entry, Object, Package, Platform, Store, Tree};
 
 fn main() -> anyhow::Result<()> {
     // let mut store = Store::in_memory();
-    let mut store = Store::init("./store")?;
+    let mut store: Store = Store::init("./store")?;
 
     let txt_id = store.insert_object(Object::Blob(Blob::from_reader(
         std::io::Cursor::new(b"foobarbaz".to_vec()),
@@ -63,9 +63,6 @@ fn main() -> anyhow::Result<()> {
         }
     }))?;
 
-    println!("program 'foo': {:?}", store.get_package(pkg_id)?);
-    println!("program 'bar': {:?}", store.get_package(pkg_id2)?);
-
     let mut pkgs = BTreeSet::new();
     pkgs.insert(pkg_id);
     pkgs.insert(pkg_id2);
@@ -75,7 +72,7 @@ fn main() -> anyhow::Result<()> {
         store.compute_closure(pkgs.clone())?
     );
 
-    let mut store2 = Store::init("./store2")?;
+    let mut store2: Store = Store::init("./store2")?;
     println!(
         "delta closure between store and store2: {:?}",
         store.compute_delta(pkgs.clone(), &store2)?

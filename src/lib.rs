@@ -2,37 +2,35 @@
 
 pub use self::closure::Closure;
 pub use self::object::*;
-pub use self::store::Entries;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use anyhow::anyhow;
-
-use crate::remote::{Objects, Remote};
-use crate::store::{Backend, Filesystem, Memory};
+use crate::backend::{Backend, Filesystem, Objects, Packages};
+use crate::remote::{ObjectStream, Remote};
 
 pub mod remote;
 
+mod backend;
+mod build;
 mod closure;
 mod object;
-mod store;
 
 /// A content-addressable store of installed software packages.
 #[derive(Debug)]
 pub struct Store<B: Backend = Filesystem> {
-    backend: B,
+    objects: B::Objects,
+    packages: B::Packages,
 }
 
-impl Store<Filesystem> {
+impl<B: Backend> Store<B> {
     /// Opens the store on the directory located in `path`.
     ///
     /// Returns `Err` if the path does not exist or is not a valid store directory.
-    #[inline]
     pub fn open<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
-        let backend = Filesystem::open(path.into())?;
-        Ok(Store { backend })
+        let (objects, packages) = B::open(path.into())?;
+        Ok(Store { objects, packages })
     }
 
     /// Initializes a new store directory at `path` and opens it.
@@ -43,10 +41,9 @@ impl Store<Filesystem> {
     ///
     /// Returns `Err` if `path` exists and does not point to a valid store directory, or if a new
     /// store directory could not be created at `path` due to permissions or other I/O errors.
-    #[inline]
     pub fn init<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
-        let backend = Filesystem::init(path.into())?;
-        Ok(Store { backend })
+        let (objects, packages) = B::init(path.into())?;
+        Ok(Store { objects, packages })
     }
 
     /// Initializes a store inside the empty directory referred to by `path` and opens it.
@@ -56,169 +53,20 @@ impl Store<Filesystem> {
     /// Returns `Err` if `path` exists and does not point to a valid store directory or an empty
     /// directory, or the new store directory could not be initialized at `path` due to permissions
     /// or I/O errors.
-    #[inline]
     pub fn init_bare<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
-        let backend = Filesystem::init_bare(path.into())?;
-        Ok(Store { backend })
+        let (objects, packages) = B::init_bare(path.into())?;
+        Ok(Store { objects, packages })
     }
-}
 
-impl Store<Memory> {
-    /// Constructs a new in-memory store. This is useful for testing.
-    #[inline]
-    pub fn in_memory() -> Self {
-        Store {
-            backend: Memory::default(),
-        }
-    }
-}
-
-impl<B: Backend> Store<B> {
     /// Inserts a tree object into the store, returning its unique ID.
     ///
     /// Returns `Err` if the object could not be inserted into the store or an I/O error occurred.
-    #[inline]
     pub fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
-        self.backend.insert_object(o)
-    }
-
-    /// Looks up a specific tree object in the store and retrieves it, if it exists.
-    ///
-    /// If the type of the requested object is known up-front, implementers _can_ use this detail
-    /// to locate and retrieve the object faster. Otherwise, callers can specify `None` and the
-    /// store will attempt to guess the desired object type, if it is not immediately known.
-    ///
-    /// Returns `Err` if the object does not exist or an I/O error occurred.
-    #[inline]
-    pub fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Object> {
-        self.backend.get_object(id, kind)
-    }
-
-    /// Returns an iterator over the objects contained in this store.
-    ///
-    /// The order in which this iterator returns entries is platform and filesystem dependent.
-    ///
-    /// Returns `Err` if the store is corrupt or an I/O error occurred.
-    #[inline]
-    pub fn iter_objects(&self) -> anyhow::Result<Entries<'_>> {
-        self.backend.iter_objects()
-    }
-
-    /// Returns `true` if the store contains a tree object with the given unique ID, or `false`
-    /// otherwise.
-    ///
-    /// If the type of the requested object is known up-front, implementers _can_ use this detail
-    /// to locate and retrieve the object faster. Otherwise, callers can specify `None` and the
-    /// store will attempt to guess the desired object type, if it is not immediately known.
-    #[inline]
-    pub fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> bool {
-        self.backend.contains_object(id, kind)
-    }
-
-    /// Looks up a `Blob` object with the given ID and retrieves it, if it exists.
-    ///
-    /// Returns `Err` if the object does not exist, the given ID does not refer to a `Blob` object,
-    /// or an I/O error occurred.
-    #[inline]
-    pub fn get_blob(&self, id: ObjectId) -> anyhow::Result<Blob> {
-        self.backend.get_blob(id)
-    }
-
-    /// Looks up a `Tree` object with the given ID and retrieves it, if it exists.
-    ///
-    /// Returns `Err` if the object does not exist, the given ID does not refer to a `Tree` object,
-    /// or an I/O error occurred.
-    #[inline]
-    pub fn get_tree(&self, id: ObjectId) -> anyhow::Result<Tree> {
-        self.backend.get_tree(id)
-    }
-
-    /// Looks up a `Package` object with the given ID and retrieves it, if it exists.
-    ///
-    /// Returns `Err` if the object does not exist, the given ID does not refer to a `Package`
-    /// object, or an I/O error occurred.
-    #[inline]
-    pub fn get_package(&self, id: ObjectId) -> anyhow::Result<Package> {
-        self.backend.get_package(id)
-    }
-
-    /// Looks up a `Spec` object with the given ID and retrieves it, if it exists.
-    ///
-    /// Returns `Err` if the object does not exist, the given ID does not refer to a `Spec` object,
-    /// or an I/O error occurred.
-    #[inline]
-    pub fn get_spec(&self, id: ObjectId) -> anyhow::Result<Spec> {
-        self.backend.get_spec(id)
-    }
-}
-
-impl<B: Backend> Store<B> {
-    /// Installs an external directory in the store as a content-addressable package.
-    ///
-    /// Returns the ID of the installed package object.
-    fn install_package(&mut self, pkg_name: &str, out_dir: &Path) -> anyhow::Result<ObjectId> {
-        debug_assert!(!pkg_name.is_empty());
-        debug_assert!(out_dir.is_dir());
-        debug_assert!(out_dir.is_absolute());
-
-        let tree_id = self.install_dir_tree(out_dir, out_dir)?;
-        self.insert_object(Object::Package(Package {
-            name: pkg_name.into(),
-            system: Platform::host(),
-            references: BTreeSet::new(), // TODO: Need to collect references.
-            tree: tree_id,
-        }))
-    }
-
-    /// Recursively inserts the contents of the given directory in the store as a tree object,
-    /// patching out any self-references to `pkg_root` detected in blobs and symlinks by converting
-    /// them to relative paths. This is to maintain the content addressable invariant of the store.
-    ///
-    /// Returns the ID of the installed tree object.
-    fn install_dir_tree(&mut self, dir: &Path, pkg_root: &Path) -> anyhow::Result<ObjectId> {
-        debug_assert!(dir.starts_with(pkg_root));
-
-        let mut entries = BTreeMap::new();
-
-        let entries_iter = std::fs::read_dir(dir)?;
-        let mut children: Vec<_> = entries_iter.collect::<Result<_, _>>()?;
-        children.sort_by_cached_key(|entry| entry.path());
-
-        for child in children {
-            let path = child.path();
-            let file_name = path
-                .file_name()
-                .expect("path must have filename")
-                .to_str()
-                .ok_or_else(|| anyhow!("path {} contains invalid UTF-8", path.display()))?
-                .to_owned();
-
-            let file_type = child.file_type()?;
-            if file_type.is_dir() {
-                let id = self.install_dir_tree(&path, pkg_root)?;
-                entries.insert(file_name, Entry::Tree { id });
-            } else if file_type.is_file() {
-                // TODO: Need to implement patching of blob self-references.
-                // let id = patch_blob_self_refs(store, dir, root)?;
-                // entries.insert(file_name, Entry::Blob { id });
-            } else if file_type.is_symlink() {
-                let target = path.read_link()?;
-                let norm_target = target.canonicalize()?;
-
-                let target = if norm_target.starts_with(pkg_root) {
-                    pathdiff::diff_paths(norm_target, pkg_root).unwrap()
-                } else {
-                    target
-                };
-
-                entries.insert(file_name, Entry::Symlink { target });
-            } else {
-                unreachable!("entries can only be files, directories, or symlinks");
-            }
+        if let Object::Package(ref pkg) = &o {
+            self.packages.install(pkg, &self.objects)?;
         }
 
-        let tree = Object::Tree(Tree { entries });
-        self.insert_object(tree)
+        self.objects.insert_object(o)
     }
 }
 
@@ -238,7 +86,6 @@ impl<B: Backend> Store<B> {
     /// Returns `Err` if any of the given object IDs do not exist in this store, any of the object
     /// IDs do not refer to a `Package` object, a cycle or structural inconsistency is detected in
     /// the reference graph, or an I/O error occurred.
-    #[inline]
     pub fn compute_delta<R>(&self, pkgs: BTreeSet<ObjectId>, dest: &R) -> anyhow::Result<Closure>
     where
         R: Remote + ?Sized,
@@ -250,10 +97,10 @@ impl<B: Backend> Store<B> {
     ///
     /// This ordering is important because it ensures objects and packages can be inserted into
     /// stores in a consistent order, where all references are inserted before their referrers.
-    pub fn yield_closure(&self, mut closure: Closure) -> Objects<'_> {
+    pub fn yield_closure(&self, mut closure: Closure) -> ObjectStream<'_> {
         Box::new(std::iter::from_fn(move || {
             if let Some((id, kind)) = closure.next() {
-                Some(self.get_object(id, Some(kind)))
+                Some(self.objects.get_object(id, Some(kind)))
             } else {
                 None
             }
@@ -275,17 +122,15 @@ impl<B: Backend> Store<B> {
 }
 
 impl<B: Backend> Remote for Store<B> {
-    #[inline]
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
-        Ok(self.contains_object(id, kind))
+        Ok(self.objects.contains_object(id, kind))
     }
 
-    #[inline]
-    fn download_objects(&self, closure: Closure) -> anyhow::Result<Objects<'_>> {
+    fn download_objects(&self, closure: Closure) -> anyhow::Result<ObjectStream<'_>> {
         Ok(self.yield_closure(closure))
     }
 
-    fn upload_objects(&mut self, objects: Objects) -> anyhow::Result<()> {
+    fn upload_objects(&mut self, objects: ObjectStream) -> anyhow::Result<()> {
         for result in objects {
             let obj = result?;
             self.insert_object(obj)?;

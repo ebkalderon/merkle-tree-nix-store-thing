@@ -7,7 +7,7 @@ use std::iter::FromIterator;
 use anyhow::anyhow;
 
 use crate::remote::Remote;
-use crate::{Backend, ObjectId, ObjectKind, Store};
+use crate::{Backend, ObjectId, ObjectKind, Objects, Store};
 
 /// A filesystem closure for one or more packages.
 ///
@@ -45,11 +45,11 @@ pub fn compute<B: Backend>(store: &Store<B>, pkgs: BTreeSet<ObjectId>) -> anyhow
     let closure = topo_sort(refs, |(id, kind)| match kind {
         ObjectKind::Blob => Ok(BTreeSet::new()),
         ObjectKind::Tree => {
-            let tree = store.get_tree(id)?;
+            let tree = store.objects.get_tree(id)?;
             Ok(tree.references().collect())
         }
         ObjectKind::Package => {
-            let p = store.get_package(id)?;
+            let p = store.objects.get_package(id)?;
             let tree_ref = (p.tree, ObjectKind::Tree);
             Ok(p.references
                 .into_iter()
@@ -81,7 +81,7 @@ where
         .collect();
 
     let missing_pkgs = topo_sort_partial(refs, |(id, kind)| {
-        let p = src.get_package(id)?;
+        let p = src.objects.get_package(id)?;
         if dst.contains_object(&id, Some(kind))? {
             Ok(Include::No)
         } else {
@@ -92,7 +92,7 @@ where
 
     let mut trees = BTreeSet::new();
     for (id, _) in &missing_pkgs {
-        let p = src.get_package(*id)?;
+        let p = src.objects.get_package(*id)?;
         trees.insert((p.tree, ObjectKind::Tree));
     }
 
@@ -102,7 +102,7 @@ where
         }
         ObjectKind::Blob => Ok(Include::Yes(BTreeSet::new())),
         ObjectKind::Tree => {
-            let tree = src.get_tree(id)?;
+            let tree = src.objects.get_tree(id)?;
             Ok(Include::Yes(tree.references().collect()))
         }
         ObjectKind::Package => Err(anyhow!("tree object cannot reference package object")),
