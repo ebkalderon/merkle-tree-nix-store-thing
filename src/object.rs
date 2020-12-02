@@ -454,10 +454,8 @@ impl Tree {
 
 impl ContentAddressable for Tree {
     fn object_id(&self) -> ObjectId {
-        let tree_hash = serde_json::to_vec(self).unwrap();
-        let mut hasher = id::Hasher::new_tree();
-        hasher.update(&tree_hash[..]);
-        hasher.finish()
+        let json = serde_json::to_vec(self).unwrap();
+        id::Hasher::new_tree().update(&json).finish()
     }
 }
 
@@ -567,9 +565,8 @@ impl Package {
 
 impl ContentAddressable for Package {
     fn object_id(&self) -> ObjectId {
-        let pkg_hash = serde_json::to_vec(self).unwrap();
-        let mut hasher = id::Hasher::new_package();
-        hasher.update(&pkg_hash[..]).finish()
+        let json = serde_json::to_vec(self).unwrap();
+        id::Hasher::new_package().update(&json).finish()
     }
 }
 
@@ -598,8 +595,7 @@ pub struct Spec {
 
 impl ContentAddressable for Spec {
     fn object_id(&self) -> ObjectId {
-        let spec_hash = serde_json::to_vec(self).unwrap();
-        let mut hasher = id::Hasher::new_spec();
-        hasher.update(&spec_hash[..]).finish()
+        let json = serde_json::to_vec(self).unwrap();
+        id::Hasher::new_spec().update(&json).finish()
     }
 }
