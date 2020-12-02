@@ -178,29 +178,49 @@ impl Filesystem {
 
 impl Backend for Filesystem {
     fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
+        /// Ensures the parent directory of `p` exists, creating it atomically if it does not.
+        fn ensure_parent_dir<F>(p: &Path, persist_obj: F) -> anyhow::Result<()>
+        where
+            F: FnOnce(&Path) -> anyhow::Result<()>,
+        {
+            let parent_dir = p.parent().expect("object path must have parent dir");
+
+            if parent_dir.exists() {
+                persist_obj(p)
+            } else {
+                let temp_dir = tempfile::tempdir_in("/var/tmp")?;
+                let temp_file = temp_dir.path().join(p.file_name().unwrap());
+                persist_obj(&temp_file)?;
+
+                let temp_dir = temp_dir.into_path();
+                match std::fs::rename(&temp_dir, &parent_dir) {
+                    Ok(()) => Ok(()),
+                    Err(_) if parent_dir.is_dir() => match std::fs::rename(&temp_file, p) {
+                        Ok(()) => Ok(()),
+                        Err(_) if p.is_file() => Ok(()),
+                        Err(e) => Err(e.into()),
+                    },
+                    Err(e) => Err(e.into()),
+                }
+            }
+        }
+
         // Prepare to serialize object into: `<store>/objects/ab/cdef01234567890.<kind>`
         let id = o.object_id();
         let mut path = self.objects_dir.join(id.to_path_buf());
         path.set_extension(o.kind().as_str());
 
-        // Create the two-character parent directory, if it doesn't already exist.
-        let parent_dir = path.parent().expect("path cannot be at filesystem root");
-        if !parent_dir.exists() {
-            match std::fs::create_dir(parent_dir) {
-                Ok(()) => {}
-                Err(_) if parent_dir.is_dir() => {}
-                Err(e) => return Err(e.into()),
+        // Persist into the `objects` directory, ensuring the parent directory exists.
+        if !path.exists() {
+            match o {
+                Object::Blob(blob) => ensure_parent_dir(&path, |p| blob.persist(p))?,
+                Object::Tree(tree) => ensure_parent_dir(&path, |p| tree.persist(p))?,
+                Object::Package(pkg) => ensure_parent_dir(&path, |p| {
+                    self.instantiate(&pkg)?;
+                    pkg.persist(p)
+                })?,
+                Object::Spec(spec) => ensure_parent_dir(&path, |p| spec.persist(p))?,
             }
-        }
-
-        match o {
-            Object::Blob(blob) => blob.persist(&path)?,
-            Object::Tree(tree) => tree.persist(&path)?,
-            Object::Package(pkg) => {
-                self.instantiate(&pkg)?;
-                pkg.persist(&path)?;
-            }
-            Object::Spec(spec) => spec.persist(&path)?,
         }
 
         Ok(id)

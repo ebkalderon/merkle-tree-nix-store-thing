@@ -19,6 +19,7 @@ pub type Entries<'a> = Box<dyn Iterator<Item = anyhow::Result<(ObjectId, ObjectK
 pub trait Backend {
     /// Inserts a tree object into the store, returning its unique ID.
     ///
+    /// Implementers _must_ ensure that this method behaves as a completely atomic transaction.
     /// Implementers _should_ take care to memoize this method such that if the object already
     /// exists in the store, this method does nothing.
     ///
