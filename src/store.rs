@@ -42,15 +42,13 @@ pub trait Backend {
     /// Returns `Err` if the store is corrupt or an I/O error occurred.
     fn iter_objects(&self) -> anyhow::Result<Entries<'_>>;
 
-    /// Returns `Ok(true)` if the store contains a tree object with the given unique ID, or
-    /// `Ok(false)` otherwise.
+    /// Returns `true` if the store contains a tree object with the given unique ID, or `false`
+    /// otherwise.
     ///
     /// If the type of the requested object is known up-front, implementers _can_ use this detail
     /// to locate and retrieve the object faster. Otherwise, callers can specify `None` and the
     /// store will attempt to guess the desired object type, if it is not immediately known.
-    ///
-    /// Returns `Err` if the store is corrupt or an I/O error occurred.
-    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool>;
+    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> bool;
 
     /// Looks up a `Blob` object with the given ID and retrieves it, if it exists.
     ///

@@ -101,7 +101,7 @@ impl Backend for Memory {
         ))
     }
 
-    fn contains_object(&self, id: &ObjectId, _: Option<ObjectKind>) -> anyhow::Result<bool> {
-        Ok(self.objects.contains_key(id))
+    fn contains_object(&self, id: &ObjectId, _: Option<ObjectKind>) -> bool {
+        self.objects.contains_key(id)
     }
 }

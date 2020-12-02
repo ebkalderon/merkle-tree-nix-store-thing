@@ -104,16 +104,14 @@ impl<B: Backend> Store<B> {
         self.backend.iter_objects()
     }
 
-    /// Returns `Ok(true)` if the store contains a tree object with the given unique ID, or
-    /// `Ok(false)` otherwise.
+    /// Returns `true` if the store contains a tree object with the given unique ID, or `false`
+    /// otherwise.
     ///
     /// If the type of the requested object is known up-front, implementers _can_ use this detail
     /// to locate and retrieve the object faster. Otherwise, callers can specify `None` and the
     /// store will attempt to guess the desired object type, if it is not immediately known.
-    ///
-    /// Returns `Err` if the store is corrupt or an I/O error occurred.
     #[inline]
-    pub fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
+    pub fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> bool {
         self.backend.contains_object(id, kind)
     }
 
@@ -279,7 +277,7 @@ impl<B: Backend> Store<B> {
 impl<B: Backend> Remote for Store<B> {
     #[inline]
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
-        self.contains_object(id, kind)
+        Ok(self.contains_object(id, kind))
     }
 
     #[inline]

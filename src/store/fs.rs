@@ -290,22 +290,18 @@ impl Backend for Filesystem {
         Ok(objects)
     }
 
-    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
+    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> bool {
         let mut path = self.objects_dir.join(id.to_path_buf());
 
         // Use `kind`, if specified, as a perf optimization to guess the file extension.
         if let Some(k) = kind {
             path.set_extension(k.as_str());
-            Ok(path.exists())
+            path.exists()
         } else {
-            for kind in ObjectKind::iter() {
-                path.set_extension(kind.as_str());
-                if path.exists() {
-                    return Ok(true);
-                }
-            }
-
-            Ok(false)
+            ObjectKind::iter().any(|k| {
+                path.set_extension(k.as_str());
+                path.exists()
+            })
         }
     }
 }
