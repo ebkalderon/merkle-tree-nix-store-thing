@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::hash::Hash;
-use std::iter::FromIterator;
 
 use anyhow::anyhow;
 
@@ -16,15 +15,6 @@ use crate::{Backend, ObjectId, ObjectKind, Objects, Store};
 /// requires at run-time or at build-time.
 #[derive(Clone, Debug, Hash, PartialEq)]
 pub struct Closure(Vec<(ObjectId, ObjectKind)>);
-
-impl FromIterator<(ObjectId, ObjectKind)> for Closure {
-    fn from_iter<I>(iter: I) -> Self
-    where
-        I: IntoIterator<Item = (ObjectId, ObjectKind)>,
-    {
-        Closure(iter.into_iter().collect())
-    }
-}
 
 impl Iterator for Closure {
     type Item = (ObjectId, ObjectKind);
@@ -136,7 +126,7 @@ where
 
     Ok(Delta {
         num_present,
-        missing: missing_pkgs.into_iter().chain(missing_content).collect(),
+        missing: Closure(missing_pkgs.into_iter().chain(missing_content).collect()),
     })
 }
 
