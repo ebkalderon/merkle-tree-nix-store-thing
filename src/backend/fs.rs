@@ -180,6 +180,10 @@ pub struct FsPackages(PathBuf);
 impl Packages for FsPackages {
     type Objects = FsObjects;
 
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
     fn instantiate(&mut self, pkg: &Package, objects: &Self::Objects) -> anyhow::Result<()> {
         let target_dir = self.0.join(pkg.install_name());
 

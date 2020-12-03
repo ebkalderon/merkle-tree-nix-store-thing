@@ -2,7 +2,7 @@
 
 pub use self::fs::Filesystem;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
 
@@ -120,6 +120,12 @@ pub trait Objects {
 pub trait Packages {
     /// The `objects` repository to use.
     type Objects: Objects;
+
+    /// Returns the absolute path to the `packages` directory.
+    ///
+    /// This path is not required to exist on disk (i.e. an in-memory backend), but its value is
+    /// nonetheless required when staging packages and patching out self-references.
+    fn path(&self) -> &Path;
 
     /// Instantiates a `Package` object from the underlying Merkle tree.
     ///
