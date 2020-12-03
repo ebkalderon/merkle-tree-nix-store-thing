@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use crate::backend::{Backend, Filesystem, Objects, Packages};
-use crate::remote::{ObjectStream, Remote};
+use crate::remote::{ClosureStream, Remote};
 
 pub mod remote;
 
@@ -97,7 +97,7 @@ impl<B: Backend> Store<B> {
     ///
     /// This ordering is important because it ensures objects and packages can be inserted into
     /// stores in a consistent order, where all references are inserted before their referrers.
-    pub fn yield_closure(&self, mut closure: Closure) -> ObjectStream<'_> {
+    pub fn yield_closure(&self, mut closure: Closure) -> ClosureStream<'_> {
         Box::new(std::iter::from_fn(move || {
             if let Some((id, kind)) = closure.next() {
                 Some(self.objects.get_object(id, Some(kind)))
@@ -126,12 +126,12 @@ impl<B: Backend> Remote for Store<B> {
         Ok(self.objects.contains_object(id, kind))
     }
 
-    fn download_objects(&self, closure: Closure) -> anyhow::Result<ObjectStream<'_>> {
+    fn download_objects(&self, closure: Closure) -> anyhow::Result<ClosureStream<'_>> {
         Ok(self.yield_closure(closure))
     }
 
-    fn upload_objects(&mut self, objects: ObjectStream) -> anyhow::Result<()> {
-        for result in objects {
+    fn upload_objects(&mut self, stream: ClosureStream) -> anyhow::Result<()> {
+        for result in stream {
             let obj = result?;
             self.insert_object(obj)?;
         }
