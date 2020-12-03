@@ -1,4 +1,4 @@
-//! Types of storage backends.
+//! Local store interface and provided implementations.
 
 pub use self::fs::Filesystem;
 

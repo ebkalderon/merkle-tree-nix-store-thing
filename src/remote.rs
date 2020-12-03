@@ -1,4 +1,4 @@
-//! Remote interface and provided implementations.
+//! Remote store interface and provided implementations.
 
 use std::time::Duration;
 

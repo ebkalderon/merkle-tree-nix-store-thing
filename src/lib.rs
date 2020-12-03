@@ -7,14 +7,14 @@ use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use crate::backend::{Backend, Filesystem, Objects, Packages};
+use crate::local::{Backend, Filesystem, Objects, Packages};
 use crate::remote::{ClosureStream, Remote};
 
 pub mod remote;
 
-mod backend;
 mod build;
 mod closure;
+mod local;
 mod object;
 
 /// A content-addressable store of installed software packages.
