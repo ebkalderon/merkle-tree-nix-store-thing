@@ -33,6 +33,18 @@ impl Iterator for Closure {
     fn next(&mut self) -> Option<Self::Item> {
         self.0.pop()
     }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.0.len(), Some(self.0.len()))
+    }
+}
+
+impl ExactSizeIterator for Closure {
+    #[inline]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// Compute the filesystem closure for the given package set.
@@ -63,8 +75,17 @@ pub fn compute<B: Backend>(store: &Store<B>, pkgs: BTreeSet<ObjectId>) -> anyhow
     Ok(Closure(closure))
 }
 
+/// A partial closure describing the delta between a local and remote package store.
+#[derive(Debug)]
+pub struct Delta {
+    /// Number of objects already present on the remote.
+    pub num_present: usize,
+    /// Closure of objects known to be missing on the remote.
+    pub missing: Closure,
+}
+
 /// Resolve the delta closure for the given package set between `src` and `dst`.
-pub fn delta<B, R>(src: &Store<B>, dst: &R, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure>
+pub fn find_delta<B, R>(src: &Store<B>, dst: &R, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Delta>
 where
     B: Backend,
     R: Remote + ?Sized,
@@ -75,6 +96,8 @@ where
     // https://matthew-brett.github.io/curious-git/git_push_algorithm.html
     // https://github.com/git/git/blob/master/Documentation/technical/pack-protocol.txt
 
+    let mut num_present = 0;
+
     let refs = pkgs
         .into_iter()
         .map(|id| (id, ObjectKind::Package))
@@ -83,6 +106,7 @@ where
     let missing_pkgs = topo_sort_partial(refs, |(id, kind)| {
         let p = src.objects.get_package(id)?;
         if dst.contains_object(&id, Some(kind))? {
+            num_present += 1;
             Ok(Include::No)
         } else {
             let refs = p.references.into_iter().map(|id| (id, kind)).collect();
@@ -98,6 +122,7 @@ where
 
     let missing_content = topo_sort_partial(trees, |(id, kind)| match kind {
         ObjectKind::Blob | ObjectKind::Tree if dst.contains_object(&id, Some(kind))? => {
+            num_present += 1;
             Ok(Include::No)
         }
         ObjectKind::Blob => Ok(Include::Yes(BTreeSet::new())),
@@ -109,7 +134,10 @@ where
         ObjectKind::Spec => unimplemented!(),
     })?;
 
-    Ok(missing_pkgs.into_iter().chain(missing_content).collect())
+    Ok(Delta {
+        num_present,
+        missing: missing_pkgs.into_iter().chain(missing_content).collect(),
+    })
 }
 
 /// A node in the reference graph.

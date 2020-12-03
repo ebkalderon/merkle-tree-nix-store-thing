@@ -1,6 +1,6 @@
 //! Prototype content-addressable Nix-like store backed by a Merkle tree.
 
-pub use self::closure::Closure;
+pub use self::closure::{Closure, Delta};
 pub use self::object::*;
 
 use std::collections::BTreeSet;
@@ -86,11 +86,11 @@ impl<B: Backend> Store<B> {
     /// Returns `Err` if any of the given object IDs do not exist in this store, any of the object
     /// IDs do not refer to a `Package` object, a cycle or structural inconsistency is detected in
     /// the reference graph, or an I/O error occurred.
-    pub fn compute_delta<R>(&self, pkgs: BTreeSet<ObjectId>, dest: &R) -> anyhow::Result<Closure>
+    pub fn compute_delta<R>(&self, pkgs: BTreeSet<ObjectId>, dest: &R) -> anyhow::Result<Delta>
     where
         R: Remote + ?Sized,
     {
-        closure::delta(self, dest, pkgs)
+        closure::find_delta(self, dest, pkgs)
     }
 
     /// Iterates over the closure and lazily yields each element in reverse topological order.
@@ -115,7 +115,7 @@ impl<B: Backend> Store<B> {
         R: Remote + ?Sized,
     {
         let delta = self.compute_delta(pkgs, dest)?;
-        let objects = self.yield_closure(delta);
+        let objects = self.yield_closure(delta.missing);
         dest.upload_objects(objects)?;
         Ok(())
     }
