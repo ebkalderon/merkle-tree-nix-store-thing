@@ -35,6 +35,9 @@ const SPEC_FILE_EXT: &str = "spec";
 pub trait ContentAddressable {
     /// Returns the unique cryptographic hash of the object.
     fn object_id(&self) -> ObjectId;
+
+    /// Returns the size of the object, in bytes.
+    fn len(&self) -> u64;
 }
 
 /// A list specifying all types of `Store` objects.
@@ -164,6 +167,15 @@ impl ContentAddressable for Object {
             Object::Tree(ref t) => t.object_id(),
             Object::Package(ref o) => o.object_id(),
             Object::Spec(ref o) => o.object_id(),
+        }
+    }
+
+    fn len(&self) -> u64 {
+        match *self {
+            Object::Blob(ref o) => o.len(),
+            Object::Tree(ref t) => t.len(),
+            Object::Package(ref o) => o.len(),
+            Object::Spec(ref o) => o.len(),
         }
     }
 }
@@ -302,12 +314,6 @@ impl Blob {
         self.is_executable
     }
 
-    /// Returns the size of the blob, in bytes.
-    #[inline]
-    pub fn len(&self) -> u64 {
-        self.length
-    }
-
     /// Persists the blob to disk with as little redundant copying as possible.
     pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
         let mode = if self.is_executable { 0o544 } else { 0o444 };
@@ -352,6 +358,10 @@ impl Blob {
 impl ContentAddressable for Blob {
     fn object_id(&self) -> ObjectId {
         self.object_id
+    }
+
+    fn len(&self) -> u64 {
+        self.length
     }
 }
 
@@ -441,6 +451,10 @@ impl ContentAddressable for Tree {
     fn object_id(&self) -> ObjectId {
         let json = serde_json::to_vec(self).unwrap();
         id::Hasher::new_tree().update(&json).finish()
+    }
+
+    fn len(&self) -> u64 {
+        serde_json::to_vec(self).unwrap().len() as u64
     }
 }
 
@@ -558,6 +572,10 @@ impl ContentAddressable for Package {
         let json = serde_json::to_vec(self).unwrap();
         id::Hasher::new_package().update(&json).finish()
     }
+
+    fn len(&self) -> u64 {
+        serde_json::to_vec(self).unwrap().len() as u64
+    }
 }
 
 /// Represents a package specification object.
@@ -594,6 +612,10 @@ impl ContentAddressable for Spec {
     fn object_id(&self) -> ObjectId {
         let json = serde_json::to_vec(self).unwrap();
         id::Hasher::new_spec().update(&json).finish()
+    }
+
+    fn len(&self) -> u64 {
+        serde_json::to_vec(self).unwrap().len() as u64
     }
 }
 
