@@ -147,7 +147,6 @@ pub trait Packages {
     ///
     /// Returns `Err` if the package could not be instantiated or an I/O error occurred.
     fn install(&mut self, pkg: &Package, objects: &Self::Objects) -> anyhow::Result<()> {
-        // Ensure all object references are present in the store before instantiation.
         let missing_refs: Vec<_> = pkg
             .references
             .iter()
