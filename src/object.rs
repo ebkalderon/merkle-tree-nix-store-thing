@@ -13,7 +13,7 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use memmap::{Mmap, MmapOptions};
 use semver::Version;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use smol_str::SmolStr;
 
 use self::spooled::SpooledTempFile;
@@ -458,6 +458,89 @@ impl ContentAddressable for Tree {
     }
 }
 
+/// The human-readable name of a package.
+#[derive(Clone, Debug, Hash, Serialize)]
+pub struct PackageName(SmolStr);
+
+impl PackageName {
+    /// The maximum acceptable name length (191 characters).
+    ///
+    /// This number was chosen in order to accommodate the limitations of common filesystems. In
+    /// this case, the `ext4` filesystem enforces a file name length limit of 256 characters, and
+    /// we also need to ensure we can fit a hyphen and the package's cryptographic hash (64).
+    pub const MAX: usize = 256 - 1 - ObjectId::STR_LENGTH;
+
+    /// Parses a package name from the string.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the string is empty, exceeds [`PackageName::MAX`] in
+    /// length, contains invalid characters outside of `[A-Za-z0-9][+-._?=]`, or starts with a `.`
+    /// character (for security reasons).
+    pub fn parse<T: AsRef<str>>(s: T) -> anyhow::Result<Self> {
+        if s.as_ref().is_empty() {
+            return Err(anyhow!("package name cannot be empty"));
+        }
+
+        if s.as_ref().len() > Self::MAX {
+            return Err(anyhow!(
+                "package name must be shorter than {} characters",
+                Self::MAX
+            ));
+        }
+
+        if s.as_ref().starts_with('.') {
+            return Err(anyhow!("package name cannot start with a `.` character"));
+        }
+
+        if !s.as_ref().chars().all(is_package_name) {
+            return Err(anyhow!(
+                "package name {:?} contains at least one invalid character",
+                s.as_ref()
+            ));
+        }
+
+        Ok(PackageName(SmolStr::new(s)))
+    }
+}
+
+impl AsRef<str> for PackageName {
+    fn as_ref(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = std::borrow::Cow::<'de>::deserialize(deserializer)?;
+        PackageName::parse(s).map_err(de::Error::custom)
+    }
+}
+
+impl Display for PackageName {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for PackageName {
+    type Err = anyhow::Error;
+
+    /// Equivalent to [`PackageName::parse()`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        PackageName::parse(s)
+    }
+}
+
+/// Returns `true` if `c` is considered a valid package name character.
+#[inline]
+pub(crate) fn is_package_name(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "+-._?=".contains(c)
+}
+
 /// Directory name of an installed package.
 ///
 /// This is the human-readable name of the package concatenated with its object ID, separated
@@ -485,7 +568,7 @@ impl InstallName {
     /// # use foo::{Arch, Env, Os, Package, Platform};
     /// #
     /// # let pkg = Package {
-    /// #     name: "hello-1.0.0".into(),
+    /// #     name: "hello-1.0.0".parse().unwrap(),
     /// #     system: Platform { arch: Arch::X86_64, os: Os::Linux(Env::Gnu) },
     /// #     references: Default::default(),
     /// #     tree: "0000000000000000000000000000000000000000000000000000000000000000".parse().unwrap(),
@@ -506,7 +589,7 @@ impl InstallName {
     /// # use foo::{Arch, Env, ObjectId, Os, Package, Platform};
     /// #
     /// # let pkg = Package {
-    /// #     name: "hello-1.0.0".into(),
+    /// #     name: "hello-1.0.0".parse().unwrap(),
     /// #     system: Platform { arch: Arch::X86_64, os: Os::Linux(Env::Gnu) },
     /// #     references: Default::default(),
     /// #     tree: "0000000000000000000000000000000000000000000000000000000000000000".parse().unwrap(),
@@ -546,7 +629,7 @@ impl From<InstallName> for String {
 #[derive(Clone, Debug, Hash, Deserialize, Serialize)]
 pub struct Package {
     /// The human-readable name.
-    pub name: SmolStr,
+    pub name: PackageName,
     /// The target platform it supports.
     pub system: Platform,
     /// Any other packages it references at run-time.
@@ -582,7 +665,7 @@ impl ContentAddressable for Package {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Spec {
     /// The human-readable name.
-    pub name: SmolStr,
+    pub name: PackageName,
     /// The semantic version string.
     pub version: Version,
     /// Short description of the package.

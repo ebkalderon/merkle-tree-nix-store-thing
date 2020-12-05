@@ -241,7 +241,7 @@ mod tests {
             Tree { entries }
         });
         let fourth = Object::Package(Package {
-            name: PACKAGE_NAME.into(),
+            name: PACKAGE_NAME.parse().unwrap(),
             system: PACKAGE_SYSTEM,
             references: BTreeSet::new(),
             tree: third.object_id(),
@@ -276,7 +276,7 @@ mod tests {
                     blob_ids.push(t.object_id());
                 }
                 (3, Ok(Object::Package(p))) => {
-                    assert_eq!(p.name, PACKAGE_NAME);
+                    assert_eq!(p.name.as_ref(), PACKAGE_NAME);
                     assert_eq!(p.system, PACKAGE_SYSTEM);
                     assert_eq!(p.references, BTreeSet::new());
                     assert_eq!(p.tree, blob_ids[2]);

@@ -20,7 +20,7 @@ impl<B: Backend> Store<B> {
 
         let tree_id = self.install_dir_tree(out_dir, out_dir)?;
         self.insert_object(Object::Package(Package {
-            name: pkg_name.into(),
+            name: pkg_name.parse().unwrap(), // TODO: Eliminate by building name from spec.
             system: Platform::host(),
             references: BTreeSet::new(), // TODO: Need to collect references.
             tree: tree_id,

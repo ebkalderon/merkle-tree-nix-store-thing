@@ -17,6 +17,9 @@ impl ObjectId {
     /// The number of bytes in an `ObjectId` hash.
     pub const LENGTH: usize = blake3::OUT_LEN;
 
+    /// The number of characters in the string representation.
+    pub const STR_LENGTH: usize = 64;
+
     /// Creates a new `ObjectId` from a raw byte array.
     pub fn from_bytes(bytes: [u8; Self::LENGTH]) -> Self {
         ObjectId(bytes.into())
@@ -195,5 +198,16 @@ impl<W: Write> Write for HashWriter<W> {
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn str_len_constant_is_correct() {
+        let len = ObjectId::from_bytes(Default::default()).to_string().len();
+        assert_eq!(ObjectId::STR_LENGTH, len);
     }
 }

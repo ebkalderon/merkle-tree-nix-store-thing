@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     }))?;
 
     let pkg_id = store.insert_object(Object::Package(Package {
-        name: "foo".into(),
+        name: "foo".parse().unwrap(),
         system: Platform::host(),
         references: BTreeSet::new(),
         tree: main_tree_id,
@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()> {
         let mut references = BTreeSet::new();
         references.insert(pkg_id);
         Package {
-            name: "bar".into(),
+            name: "bar".parse().unwrap(),
             system: Platform::host(),
             references,
             tree: similar_tree_id,
