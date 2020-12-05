@@ -16,6 +16,7 @@ mod build;
 mod closure;
 mod local;
 mod object;
+mod reference;
 
 /// A content-addressable store of installed software packages.
 #[derive(Debug)]
