@@ -5,11 +5,13 @@ authors = ["Eyal Kalderon <ebkalderon@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+aho-corasick = "0.7.15"
 anyhow = "1.0.32"
 blake3 = { version = "0.3.6", features = ["rayon"] }
 filetime = "0.2.12"
 futures = "0.3.7"
 hex = { version = "0.4.2", features = ["serde"] }
+infer = "0.3.2"
 memmap = "0.7.0"
 nom = "6.0.1"
 pathdiff = "0.2.0"

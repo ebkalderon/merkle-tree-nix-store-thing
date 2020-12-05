@@ -106,7 +106,7 @@ pub(crate) fn is_package_name(c: char) -> bool {
 /// Given an example package named `hello-1.0.0`, its install name string could be:
 ///
 /// ```text
-/// hello-1.0.0-fd53fe2392dc260e9cf414a39aeb43641c10ab48a726c58e76d06a7fe443d660
+/// hello-1.0.0-bd6f7bd0736179efcd40aec9e8268fb1b5dd73106300e1a4112676dce7235405
 /// ```
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct InstallName(String);
@@ -122,12 +122,13 @@ impl InstallName {
     /// # Example
     ///
     /// ```rust
-    /// # use foo::{Arch, Env, Os, Package, Platform};
+    /// # use foo::{platform, Package};
     /// #
     /// # let pkg = Package {
     /// #     name: "hello-1.0.0".parse().unwrap(),
-    /// #     system: Platform { arch: Arch::X86_64, os: Os::Linux(Env::Gnu) },
+    /// #     system: platform!(x86_64-linux-gnu),
     /// #     references: Default::default(),
+    /// #     self_references: Default::default(),
     /// #     tree: "0000000000000000000000000000000000000000000000000000000000000000".parse().unwrap(),
     /// # };
     /// #
@@ -143,17 +144,18 @@ impl InstallName {
     /// # Example
     ///
     /// ```rust
-    /// # use foo::{Arch, Env, ObjectId, Os, Package, Platform};
+    /// # use foo::{platform, ObjectId, Package};
     /// #
     /// # let pkg = Package {
     /// #     name: "hello-1.0.0".parse().unwrap(),
-    /// #     system: Platform { arch: Arch::X86_64, os: Os::Linux(Env::Gnu) },
+    /// #     system: platform!(x86_64-linux-gnu),
     /// #     references: Default::default(),
+    /// #     self_references: Default::default(),
     /// #     tree: "0000000000000000000000000000000000000000000000000000000000000000".parse().unwrap(),
     /// # };
     /// #
     /// let install_name = pkg.install_name();
-    /// let id: ObjectId = "fd53fe2392dc260e9cf414a39aeb43641c10ab48a726c58e76d06a7fe443d660".parse().unwrap();
+    /// let id: ObjectId = "bd6f7bd0736179efcd40aec9e8268fb1b5dd73106300e1a4112676dce7235405".parse().unwrap();
     /// assert_eq!(install_name.id(), id);
     /// ```
     pub fn id(&self) -> ObjectId {

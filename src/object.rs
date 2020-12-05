@@ -291,6 +291,27 @@ impl Blob {
         }
     }
 
+    /// Opens a `Blob` from a temp file without hashing it, trusting the `object_id` to be correct.
+    ///
+    /// # Safety
+    ///
+    /// This function does not ensure that the seek cursor is at offset 0. If this invariant is
+    /// violated, the `std::io::Read` implementation for `Blob` could produce unexpected results.
+    /// Use this method only in cases where the file is never read.
+    pub(crate) fn from_file_unchecked(
+        file: tempfile::NamedTempFile,
+        is_executable: bool,
+        length: u64,
+        object_id: ObjectId,
+    ) -> Self {
+        Blob {
+            stream: Kind::File(file),
+            is_executable,
+            length,
+            object_id,
+        }
+    }
+
     /// Hashes and returns a new `Blob` object from a reader.
     ///
     /// This will attempt to buffer the I/O stream into memory, spilling over into a temporary file
@@ -473,6 +494,8 @@ pub struct Package {
     pub system: Platform,
     /// Any other packages it references at run-time.
     pub references: BTreeSet<ObjectId>,
+    /// Any blob objects which contain self-references.
+    pub self_references: BTreeSet<ObjectId>,
     /// Output directory tree to be installed.
     pub tree: ObjectId,
 }

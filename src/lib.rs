@@ -12,8 +12,8 @@ use crate::remote::{ClosureStream, Remote};
 
 pub mod remote;
 
-mod build;
 mod closure;
+mod install;
 mod local;
 mod object;
 mod reference;

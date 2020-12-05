@@ -7,7 +7,8 @@ use filetime::FileTime;
 
 use super::{Backend, Objects, Packages};
 use crate::{
-    Blob, ContentAddressable, Entry, InstallName, Object, ObjectId, ObjectKind, Package, Tree,
+    install, Blob, ContentAddressable, Entry, InstallName, Object, ObjectId, ObjectKind, Package,
+    Tree,
 };
 
 const OBJECTS_SUBDIR: &str = "objects";
@@ -195,7 +196,8 @@ impl Packages for FsPackages {
             // Serialize the tree to a temporary directory first. This way, if an error occurs,
             // the `packages` directory will not be left in an inconsistent state.
             let temp_dir = tempfile::tempdir_in("/var/tmp")?;
-            self.write_tree(temp_dir.path(), tree, objects)?;
+            let mut builder = TreeBuilder::new(objects, pkg, &target_dir);
+            builder.construct(tree, temp_dir.path())?;
 
             // Atomically move the package directory to its final location.
             let finished_dir = temp_dir.into_path();
@@ -212,41 +214,68 @@ impl Packages for FsPackages {
     }
 }
 
-impl FsPackages {
-    fn write_tree(&mut self, tree_dir: &Path, tree: Tree, obj: &FsObjects) -> anyhow::Result<()> {
+// Use a struct with fields and methods because recursive closures are impossible in Rust.
+struct TreeBuilder<'a> {
+    objects: &'a FsObjects,
+    pkg: &'a Package,
+    root_dir: &'a Path,
+}
+
+impl<'a> TreeBuilder<'a> {
+    fn new(objects: &'a FsObjects, pkg: &'a Package, root_dir: &'a Path) -> Self {
+        TreeBuilder {
+            objects,
+            pkg,
+            root_dir,
+        }
+    }
+
+    fn construct(&mut self, tree: Tree, tree_dir: &Path) -> anyhow::Result<()> {
         if !tree_dir.exists() {
             std::fs::create_dir_all(&tree_dir)?;
             println!("=> created tree subdir: {}", tree_dir.display());
         }
 
         for (name, entry) in &tree.entries {
-            let entry_path = tree_dir.join(name);
+            let dst = tree_dir.join(name);
             match entry {
                 Entry::Tree { id } => {
-                    let subtree = obj.get_tree(*id)?;
-                    self.write_tree(&entry_path, subtree, obj)?;
+                    let subtree = self.objects.get_tree(*id)?;
+                    self.construct(subtree, &dst)?;
                 }
                 Entry::Blob { id } => {
-                    let mut src = obj.0.join(id.to_path_buf());
+                    let mut src = self.objects.0.join(id.to_path_buf());
                     src.set_extension(ObjectKind::Blob.as_str());
-                    std::fs::hard_link(&src, &entry_path).map_err(|e| match e.kind() {
-                        std::io::ErrorKind::NotFound => anyhow!("blob object {} not found", id),
-                        _ => e.into(),
-                    })?;
-                    println!(
-                        "=> hard-linked blob: {} -> {}",
-                        src.display(),
-                        entry_path.display()
-                    );
+
+                    if self.pkg.self_references.contains(&id) {
+                        std::fs::copy(&src, &dst)?;
+                        install::rewrite_zeroed_self_refs(&dst, self.root_dir)?;
+
+                        let metadata = std::fs::metadata(&src)?;
+                        let perms = metadata.permissions();
+                        std::fs::set_permissions(&dst, perms)?;
+
+                        let zero = FileTime::zero();
+                        filetime::set_symlink_file_times(&dst, zero, zero)?;
+                    } else {
+                        std::fs::hard_link(&src, &dst).map_err(|e| match e.kind() {
+                            std::io::ErrorKind::NotFound => anyhow!("blob object {} not found", id),
+                            _ => e.into(),
+                        })?;
+                        println!(
+                            "=> hard-linked blob: {} -> {}",
+                            src.display(),
+                            dst.display()
+                        );
+                    }
                 }
                 Entry::Symlink { target } => {
-                    std::os::unix::fs::symlink(&target, &entry_path)?;
-                    let metadata = std::fs::symlink_metadata(&entry_path)?;
-                    let time = FileTime::from_last_access_time(&metadata);
-                    filetime::set_symlink_file_times(&entry_path, time, time)?;
+                    std::os::unix::fs::symlink(&target, &dst)?;
+                    let zero = FileTime::zero();
+                    filetime::set_symlink_file_times(&dst, zero, zero)?;
                     println!(
                         "=> created symlink: {} -> {}",
-                        entry_path.display(),
+                        dst.display(),
                         target.display()
                     );
                 }

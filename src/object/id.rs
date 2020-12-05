@@ -25,6 +25,14 @@ impl ObjectId {
         ObjectId(bytes.into())
     }
 
+    /// Creates a new `ObjectId` from all zero bytes.
+    ///
+    /// This hash is impossible to instantiate in real life. It is only ever used as a placeholder
+    /// value when patching and rewriting self-references in `Blob` objects.
+    pub fn zero() -> Self {
+        ObjectId([0; Self::LENGTH].into())
+    }
+
     /// Returns the raw byte representation of the object ID.
     pub fn as_bytes(&self) -> &[u8; Self::LENGTH] {
         self.0.as_bytes()
