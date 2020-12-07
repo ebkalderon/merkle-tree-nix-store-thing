@@ -1,16 +1,15 @@
 //! Internal method for converting external directories into `Package` objects.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Read, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use aho_corasick::AhoCorasick;
 use anyhow::{anyhow, Context};
 
 use crate::local::Packages;
-use crate::reference::ReferenceSink;
+use crate::reference::{ReferenceSink, RewriteSink};
 use crate::{
     Backend, Blob, Entry, HashWriter, Hasher, Object, ObjectId, Package, Platform, Spec, Store,
     Tree,
@@ -24,9 +23,9 @@ impl<B: Backend> Store<B> {
     /// Blobs found to contain references to their own install directory ("self-references") are
     /// inserted into the store with the hash component of every occurrence normalized to
     /// [`ObjectId::zero()`]. These zeroed hashes are later patched out to the real package hash by
-    /// a call to [`rewrite_zeroed_self_refs()`] at install time. Unfortunately, this in-place
-    /// patching means these particular blob files must be copied over from the `objects` directory
-    /// instead of hard-linked, meaning there is always some overhead associated with storing them.
+    /// a call to [`rewrite_paths()`] at istall time. Unfortunately, this in-place patching means
+    /// these particular blob files must be copied over from the `objects` directory instead of
+    /// hard-linked, meaning they have some inherent storage overhead.
     ///
     /// This method tries to never modify the original contents of `out_dir` during this process,
     /// with one notable exception: executable files found to contain RPATH self-references will be
@@ -58,30 +57,29 @@ impl<B: Backend> Store<B> {
     }
 }
 
-/// Rewrites all zeroed-out hashes inside the `target` file with the final hash, parsed from the
-/// file name component of `pkg_root`.
+/// Rewrites every zeroed self-reference inside `writer` with the final path string `new`.
+///
+/// To avoid searching through the entire file, this function jumps to every position in `offsets`
+/// and overwrites the data with `new`. It blindly trusts that the values in `offsets` are correct,
+/// so please use with care.
 ///
 /// This function is intended to be called at package install time.
-pub(crate) fn rewrite_zeroed_self_refs(target: &Path, pkg_root: &Path) -> anyhow::Result<()> {
-    assert!(target.is_file());
+pub fn rewrite_paths<W>(writer: &mut W, new: &Path, offsets: &BTreeSet<u64>) -> anyhow::Result<()>
+where
+    W: Write + Seek,
+{
+    let final_path = new.to_str().ok_or(anyhow!("new path is invalid UTF-8"))?;
 
-    let zeroed_hash = PathBuf::from(ObjectId::zero().to_string());
-    let final_hash: PathBuf = pkg_root
-        .file_name()
-        .expect("pkg_root must have name")
-        .to_string_lossy()
-        .rsplitn(2, "-")
-        .next()
-        .expect("dir name must have hash component")
-        .parse()
-        .map(|id: ObjectId| id.to_string().into())
-        .context("failed to parse `ObjectId` from directory name")?;
+    for &offset in offsets {
+        writer
+            .seek(SeekFrom::Start(offset))
+            .with_context(|| format!("failed to seek to offset {}", offset))?;
+        writer
+            .write_all(final_path.as_bytes())
+            .with_context(|| format!("failed to rewrite offset {} with new path", offset))?;
+    }
 
-    // Rewrite all instances of the zeroed ID with the final package ID.
-    let mut original = std::fs::File::open(target)?;
-    let mut patched = tempfile::NamedTempFile::new_in("/var/tmp")?;
-    rewrite_pattern(&mut original, &mut patched, &zeroed_hash, &final_hash)?;
-    patched.persist(target)?;
+    writer.flush()?;
 
     Ok(())
 }
@@ -97,14 +95,18 @@ fn build_tree<B>(
     tree_dir: &Path,
     out_dir: &Path,
     spec: &Spec,
-) -> anyhow::Result<(ObjectId, BTreeSet<ObjectId>, BTreeSet<ObjectId>)>
+) -> anyhow::Result<(
+    ObjectId,
+    BTreeSet<ObjectId>,
+    BTreeMap<ObjectId, BTreeSet<u64>>,
+)>
 where
     B: Backend,
 {
     debug_assert!(tree_dir.starts_with(out_dir));
 
     let mut references = BTreeSet::new();
-    let mut self_references = BTreeSet::new();
+    let mut self_references = BTreeMap::new();
     let mut entries = BTreeMap::new();
 
     let iter = std::fs::read_dir(tree_dir)?;
@@ -127,12 +129,13 @@ where
             self_references.extend(self_refs);
             entries.insert(file_name, Entry::Tree { id });
         } else if file_type.is_file() {
-            let pkgs_dir = store.packages.path().to_owned();
-            let (id, refs, self_refs) = patch_insert_blob(store, &path, out_dir, &pkgs_dir, spec)?;
-            references.extend(refs);
+            let pkgs_dir = store.packages.path();
+            let (blob, refs, offsets) = make_content_addressed(&path, out_dir, &pkgs_dir, spec)?;
 
-            if self_refs {
-                self_references.insert(id);
+            let id = store.insert_object(Object::Blob(blob))?;
+            references.extend(refs);
+            if !offsets.is_empty() {
+                self_references.insert(id, offsets);
             }
 
             entries.insert(file_name, Entry::Blob { id });
@@ -161,25 +164,19 @@ where
 ///
 /// This function scans the contents of `file` for run-time references, replacing any detected
 /// self-references to `out_dir` as a fixed value (in this case, the final install directory but
-/// with the cryptographic hash component set to [`ObjectId::zero()`]), and inserts the patched
-/// file into the store as a new blob object.
+/// with the cryptographic hash component set to [`ObjectId::zero()`]).
 ///
 /// The original contents of `file` are not modified during this process, as temp files are used.
 /// However, if `file` is an executable with self-references, its RPATHs will be patched _in-place_
 /// before its contents are streamed, hashed, and rewritten into the temp file.
 ///
-/// Returns the ID of the inserted blob, its detected run-time references, and a `bool` value
-/// indicating to the caller whether this blob is contains any zeroed-out self-references.
-fn patch_insert_blob<B>(
-    store: &mut Store<B>,
+/// Returns the new `Blob`, any detected run-time references, and locations of any self-references.
+fn make_content_addressed(
     file: &Path,
     out_dir: &Path,
     pkgs_dir: &Path,
     spec: &Spec,
-) -> anyhow::Result<(ObjectId, BTreeSet<ObjectId>, bool)>
-where
-    B: Backend,
-{
+) -> anyhow::Result<(Blob, BTreeSet<ObjectId>, BTreeSet<u64>)> {
     debug_assert!(file.starts_with(out_dir));
     debug_assert!(pkgs_dir.is_absolute());
 
@@ -200,9 +197,6 @@ where
         }
     }
 
-    let temp_file = tempfile::NamedTempFile::new_in("/var/tmp")?;
-    let sink = ReferenceSink::new(temp_file);
-    let mut writer = HashWriter::with_hasher(Hasher::new_blob(is_executable), sink);
     let zeroed_install_dir = pkgs_dir.join(format!(
         "{}-{}-{}",
         spec.name,
@@ -210,57 +204,27 @@ where
         ObjectId::zero()
     ));
 
+    let temp_file = tempfile::NamedTempFile::new_in("/var/tmp")?;
+    let hasher = HashWriter::with_hasher(Hasher::new_blob(is_executable), temp_file);
+    let rewriter = RewriteSink::new(hasher, out_dir, &zeroed_install_dir)?;
+    let mut writer = ReferenceSink::new(rewriter);
+
     // Rewrite any self-references to the install dir with a zeroed-out placeholder install dir.
-    let self_referential = rewrite_pattern(&mut reader, &mut writer, out_dir, &zeroed_install_dir)?;
+    crate::copy_wide(&mut reader, &mut writer)?;
+    writer.flush()?;
 
-    let object_id = writer.object_id();
-    let sink = writer.into_inner();
-    let (temp_file, mut references) = sink.into_inner();
+    let (rewriter, mut references) = writer.into_inner();
+    let (hasher, offsets) = rewriter.into_inner()?;
+    let object_id = hasher.object_id();
+    let temp_file = hasher.into_inner();
 
-    // Do not count the placeholder as a reference.
+    // Do not count the placeholder hash as a reference.
     references.remove(&ObjectId::zero());
 
     let metadata = temp_file.as_file().metadata()?;
     let blob = Blob::from_file_unchecked(temp_file, is_executable, metadata.len(), object_id);
-    let blob_id = store.insert_object(Object::Blob(blob))?;
 
-    Ok((blob_id, references, self_referential))
-}
-
-/// Copies the entire contents of `src` into `dst`, replacing all byte matches of `pat` with `rep`.
-///
-/// Returns `Ok(true)` if matches were found and replaced. If nothing in the entire source stream
-/// matched `pat`, then `Ok(false)` is returned and the destination sink is guaranteed to contain
-/// identical contents to its source.
-fn rewrite_pattern<R, W>(src: &mut R, dst: &mut W, pat: &Path, rep: &Path) -> anyhow::Result<bool>
-where
-    R: Read,
-    W: Write,
-{
-    let mut found_matches = false;
-
-    let patterns = [pat.display().to_string()];
-    let replace = rep.display().to_string();
-    let replacer = AhoCorasick::new_auto_configured(&patterns);
-
-    let mut patched = std::io::BufWriter::with_capacity(64 * 1024, dst);
-    replacer.stream_replace_all_with(src, &mut patched, |_, bytes, w| {
-        found_matches = true;
-
-        if replace.len() > bytes.len() {
-            let msg = format!("path {} is longer than original, rewrite failed", replace);
-            return Err(io::Error::new(io::ErrorKind::Other, msg));
-        }
-
-        let padding = vec![b'/'; bytes.len() - replace.len()];
-        w.write_all(replace.as_bytes())?;
-        w.write_all(&padding)?;
-        Ok(())
-    })?;
-
-    patched.flush()?;
-
-    Ok(found_matches)
+    Ok((blob, references, offsets))
 }
 
 /// Patches all executable RPATHs that start with `prefix` to use relative paths.

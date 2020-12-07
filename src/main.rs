@@ -49,7 +49,7 @@ fn main() -> anyhow::Result<()> {
         name: "foo".parse().unwrap(),
         system: Platform::host(),
         references: BTreeSet::new(),
-        self_references: BTreeSet::new(),
+        self_references: BTreeMap::new(),
         tree: main_tree_id,
     }))?;
 
@@ -60,7 +60,7 @@ fn main() -> anyhow::Result<()> {
             name: "bar".parse().unwrap(),
             system: Platform::host(),
             references,
-            self_references: BTreeSet::new(),
+            self_references: BTreeMap::new(),
             tree: similar_tree_id,
         }
     }))?;

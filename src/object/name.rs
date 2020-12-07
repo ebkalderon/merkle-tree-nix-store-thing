@@ -106,7 +106,7 @@ pub(crate) fn is_package_name(c: char) -> bool {
 /// Given an example package named `hello-1.0.0`, its install name string could be:
 ///
 /// ```text
-/// hello-1.0.0-bd6f7bd0736179efcd40aec9e8268fb1b5dd73106300e1a4112676dce7235405
+/// hello-1.0.0-58f16e6023968d08d72b0554e8310f073365a0a62ab33bc9052d1f7a5510035b
 /// ```
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct InstallName(String);
@@ -155,7 +155,7 @@ impl InstallName {
     /// # };
     /// #
     /// let install_name = pkg.install_name();
-    /// let id: ObjectId = "bd6f7bd0736179efcd40aec9e8268fb1b5dd73106300e1a4112676dce7235405".parse().unwrap();
+    /// let id: ObjectId = "58f16e6023968d08d72b0554e8310f073365a0a62ab33bc9052d1f7a5510035b".parse().unwrap();
     /// assert_eq!(install_name.id(), id);
     /// ```
     pub fn id(&self) -> ObjectId {

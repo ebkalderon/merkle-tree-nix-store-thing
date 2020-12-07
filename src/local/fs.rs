@@ -247,13 +247,15 @@ impl<'a> TreeBuilder<'a> {
                     let mut src = self.objects.0.join(id.to_path_buf());
                     src.set_extension(ObjectKind::Blob.as_str());
 
-                    if self.pkg.self_references.contains(&id) {
+                    if let Some(ref offsets) = self.pkg.self_references.get(&id) {
                         std::fs::copy(&src, &dst)?;
-                        install::rewrite_zeroed_self_refs(&dst, self.root_dir)?;
 
-                        let metadata = std::fs::metadata(&src)?;
+                        let mut file = std::fs::File::open(&dst)?;
+                        install::rewrite_paths(&mut file, &self.root_dir, offsets)?;
+
+                        let metadata = file.metadata()?;
                         let perms = metadata.permissions();
-                        std::fs::set_permissions(&dst, perms)?;
+                        file.set_permissions(perms)?;
 
                         let zero = FileTime::zero();
                         filetime::set_symlink_file_times(&dst, zero, zero)?;

@@ -5,7 +5,6 @@ authors = ["Eyal Kalderon <ebkalderon@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-aho-corasick = "0.7.15"
 anyhow = "1.0.32"
 blake3 = { version = "0.3.6", features = ["rayon"] }
 filetime = "0.2.12"

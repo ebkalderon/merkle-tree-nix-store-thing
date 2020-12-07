@@ -244,7 +244,7 @@ mod tests {
             name: PACKAGE_NAME.parse().unwrap(),
             system: PACKAGE_SYSTEM,
             references: BTreeSet::new(),
-            self_references: BTreeSet::new(),
+            self_references: BTreeMap::new(),
             tree: third.object_id(),
         });
 
@@ -280,7 +280,7 @@ mod tests {
                     assert_eq!(p.name.as_ref(), PACKAGE_NAME);
                     assert_eq!(p.system, PACKAGE_SYSTEM);
                     assert_eq!(p.references, BTreeSet::new());
-                    assert_eq!(p.self_references, BTreeSet::new());
+                    assert_eq!(p.self_references, BTreeMap::new());
                     assert_eq!(p.tree, blob_ids[2]);
                 }
                 (i, other) => panic!("received unexpected object ({}): {:?}", i, other),

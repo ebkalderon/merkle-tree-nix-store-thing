@@ -494,8 +494,8 @@ pub struct Package {
     pub system: Platform,
     /// Any other packages it references at run-time.
     pub references: BTreeSet<ObjectId>,
-    /// Any blob objects which contain self-references.
-    pub self_references: BTreeSet<ObjectId>,
+    /// Any blob objects which contain self-references and their byte offsets.
+    pub self_references: BTreeMap<ObjectId, BTreeSet<u64>>,
     /// Output directory tree to be installed.
     pub tree: ObjectId,
 }
