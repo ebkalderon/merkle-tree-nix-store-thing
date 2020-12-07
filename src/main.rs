@@ -6,18 +6,15 @@ fn main() -> anyhow::Result<()> {
     // let mut store = Store::in_memory();
     let mut store: Store = Store::init("./store")?;
 
-    let txt_id = store.insert_object(Object::Blob(Blob::from_reader(
-        std::io::Cursor::new(b"foobarbaz".to_vec()),
-        false,
-    )?))?;
-    let rs_id = store.insert_object(Object::Blob(Blob::from_bytes(
-        b"fn main() {}".to_vec(),
-        false,
-    )))?;
-    let sh_id = store.insert_object(Object::Blob(Blob::from_bytes(
-        b"echo \"hi\"".to_vec(),
-        true,
-    )))?;
+    let txt_id = store.insert_object(Object::Blob(
+        Blob::from_reader(std::io::Cursor::new(b"foobarbaz".to_vec()), false)?.0,
+    ))?;
+    let rs_id = store.insert_object(Object::Blob(
+        Blob::from_bytes(b"fn main() {}".to_vec(), false).0,
+    ))?;
+    let sh_id = store.insert_object(Object::Blob(
+        Blob::from_bytes(b"echo \"hi\"".to_vec(), true).0,
+    ))?;
 
     let sub_tree_id = store.insert_object(Object::Tree({
         let mut entries = BTreeMap::new();

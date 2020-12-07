@@ -1,18 +1,16 @@
 //! Internal method for converting external directories into `Package` objects.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Seek, SeekFrom, Write};
-use std::os::unix::fs::MetadataExt;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context};
 
 use crate::local::Packages;
-use crate::reference::{ReferenceSink, RewriteSink};
 use crate::{
-    Backend, Blob, Entry, HashWriter, Hasher, Object, ObjectId, Package, Platform, Spec, Store,
-    Tree,
+    util, Backend, Blob, Entry, Object, ObjectId, Offsets, Package, Platform, References, Spec,
+    Store, Tree,
 };
 
 const PATCHELF_BIN: &str = "patchelf";
@@ -95,17 +93,13 @@ fn build_tree<B>(
     tree_dir: &Path,
     out_dir: &Path,
     spec: &Spec,
-) -> anyhow::Result<(
-    ObjectId,
-    BTreeSet<ObjectId>,
-    BTreeMap<ObjectId, BTreeSet<u64>>,
-)>
+) -> anyhow::Result<(ObjectId, References, BTreeMap<ObjectId, Offsets>)>
 where
     B: Backend,
 {
     debug_assert!(tree_dir.starts_with(out_dir));
 
-    let mut references = BTreeSet::new();
+    let mut references = References::new();
     let mut self_references = BTreeMap::new();
     let mut entries = BTreeMap::new();
 
@@ -176,13 +170,16 @@ fn make_content_addressed(
     out_dir: &Path,
     pkgs_dir: &Path,
     spec: &Spec,
-) -> anyhow::Result<(Blob, BTreeSet<ObjectId>, BTreeSet<u64>)> {
+) -> anyhow::Result<(Blob, References, Offsets)> {
     debug_assert!(file.starts_with(out_dir));
     debug_assert!(pkgs_dir.is_absolute());
 
-    let mut reader = std::fs::File::open(file)?;
-    let metadata = reader.metadata()?;
-    let is_executable = metadata.mode() & 0o100 != 0;
+    let (reader, is_executable) = util::open_large_read::<(Box<dyn Read>, _), _, _, _>(
+        file,
+        |cursor, is_executable| Ok((Box::new(cursor), is_executable)),
+        |mmap, is_executable| Ok((Box::new(mmap), is_executable)),
+        |file, is_executable| Ok((Box::new(file), is_executable)),
+    )?;
 
     if is_executable {
         // If this is an ELF/Mach-O binary, patch out self-references to use relative paths. This
@@ -204,25 +201,12 @@ fn make_content_addressed(
         ObjectId::zero()
     ));
 
-    let temp_file = tempfile::NamedTempFile::new_in("/var/tmp")?;
-    let hasher = HashWriter::with_hasher(Hasher::new_blob(is_executable), temp_file);
-    let rewriter = RewriteSink::new(hasher, out_dir, &zeroed_install_dir)?;
-    let mut writer = ReferenceSink::new(rewriter);
-
     // Rewrite any self-references to the install dir with a zeroed-out placeholder install dir.
-    crate::copy_wide(&mut reader, &mut writer)?;
-    writer.flush()?;
-
-    let (rewriter, mut references) = writer.into_inner();
-    let (hasher, offsets) = rewriter.into_inner()?;
-    let object_id = hasher.object_id();
-    let temp_file = hasher.into_inner();
+    let (blob, mut references, offsets) =
+        Blob::from_reader_rewrite(reader, is_executable, out_dir, &zeroed_install_dir)?;
 
     // Do not count the placeholder hash as a reference.
     references.remove(&ObjectId::zero());
-
-    let metadata = temp_file.as_file().metadata()?;
-    let blob = Blob::from_file_unchecked(temp_file, is_executable, metadata.len(), object_id);
 
     Ok((blob, references, offsets))
 }

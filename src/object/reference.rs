@@ -13,8 +13,13 @@ use nom::multi::{many0, many_till};
 use nom::sequence::{pair, preceded};
 use nom::IResult;
 
-use crate::object::is_package_name;
-use crate::ObjectId;
+use super::{name::is_package_name, ObjectId};
+
+/// A set of packages referenced by a file at run-time.
+pub type References = BTreeSet<ObjectId>;
+
+/// A set of byte offsets in a file where self-references are located.
+pub type Offsets = BTreeSet<u64>;
 
 /// Wraps a writer and replaces path references in its output that match a pattern.
 ///
@@ -25,7 +30,7 @@ use crate::ObjectId;
 #[derive(Debug)]
 pub struct RewriteSink<W> {
     inner: W,
-    offsets: BTreeSet<u64>,
+    offsets: Offsets,
     pattern: Box<[u8]>,
     replace: Box<[u8]>,
     cursor: u64,
@@ -53,7 +58,7 @@ impl<W: Write> RewriteSink<W> {
 
         Ok(RewriteSink {
             inner,
-            offsets: BTreeSet::new(),
+            offsets: Offsets::new(),
             pattern: pat.into_boxed_slice(),
             replace: rep.into_boxed_slice(),
             cursor: 0,
@@ -64,7 +69,7 @@ impl<W: Write> RewriteSink<W> {
     /// Unwraps this `RewriteSink<W>`, returning the underlying writer and replacement offsets.
     ///
     /// The buffer is written out before returning the writer.
-    pub fn into_inner(mut self) -> io::Result<(W, BTreeSet<u64>)> {
+    pub fn into_inner(mut self) -> io::Result<(W, Offsets)> {
         self.flush()?;
         Ok((self.inner, self.offsets))
     }
@@ -122,7 +127,7 @@ impl<W: Write> Write for RewriteSink<W> {
 #[derive(Debug)]
 pub struct ReferenceSink<W> {
     inner: W,
-    refs: BTreeSet<ObjectId>,
+    refs: References,
     buf: Vec<u8>,
 }
 
@@ -131,13 +136,13 @@ impl<W: Write> ReferenceSink<W> {
     pub fn new(inner: W) -> Self {
         ReferenceSink {
             inner,
-            refs: BTreeSet::new(),
+            refs: References::new(),
             buf: Vec::new(),
         }
     }
 
     /// Unwraps this `ReferenceSink<W>`, returning the underlying writer and any detected references.
-    pub fn into_inner(self) -> (W, BTreeSet<ObjectId>) {
+    pub fn into_inner(self) -> (W, References) {
         (self.inner, self.refs)
     }
 }
@@ -214,7 +219,7 @@ mod tests {
             s/hello-1.0.0-fd53fe2392dc260e9cf414a39aeb43641c10ab48a726c58e76d06a7fe443d660//////\
             ///etkte72tjto'q";
 
-        let mut expected_offs = BTreeSet::new();
+        let mut expected_offs = Offsets::new();
         expected_offs.insert(22);
         expected_offs.insert(137);
 
@@ -241,7 +246,7 @@ mod tests {
             .parse()
             .unwrap();
 
-        let mut expected = BTreeSet::new();
+        let mut expected = References::new();
         expected.insert(id);
 
         let (_cursor, references) = sink.into_inner();
@@ -273,7 +278,7 @@ mod tests {
             .parse()
             .unwrap();
 
-        let mut expected = BTreeSet::new();
+        let mut expected = References::new();
         expected.insert(id1);
         expected.insert(id2);
         expected.insert(id3);

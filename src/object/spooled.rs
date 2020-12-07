@@ -3,6 +3,8 @@
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+use crate::util;
+
 #[derive(Debug)]
 enum Storage {
     InMemory(Cursor<Vec<u8>>),
@@ -17,7 +19,7 @@ pub struct SpooledTempFile {
 }
 
 impl SpooledTempFile {
-    /// Creates a new `SpooledTempFile` with the given spillover max_size.
+    /// Creates a new `SpooledTempFile` with the given spillover `max_size`.
     pub fn new(max_size: usize) -> Self {
         SpooledTempFile {
             inner: Storage::InMemory(Cursor::new(Vec::new())),
@@ -36,11 +38,11 @@ impl SpooledTempFile {
                 let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                 temp.write_all(cursor.get_ref())?;
                 temp.flush()?;
-                super::normalize_perms(temp.path(), mode)?;
+                util::normalize_perms(temp.path(), mode)?;
                 temp.persist(dest)?;
             }
             Storage::OnDisk(file) => {
-                super::normalize_perms(file.path(), mode)?;
+                util::normalize_perms(file.path(), mode)?;
                 file.persist(dest)?;
             }
         }

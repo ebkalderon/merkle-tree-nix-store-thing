@@ -7,6 +7,7 @@ use anyhow::anyhow;
 use serde::Serialize;
 
 use super::{Blob, ContentAddressable, Object, ObjectId};
+use crate::util;
 
 const MAGIC_VALUE: &[u8] = b"store-pack";
 const FORMAT_VERSION: u8 = 1;
@@ -61,7 +62,7 @@ impl<W: Write> PackWriter<W> {
     /// Returns `Err` if a serialization or I/O error occurred.
     pub fn append(&mut self, o: Object) -> anyhow::Result<()> {
         match o {
-            Object::Blob(mut blob) => {
+            Object::Blob(blob) => {
                 let kind = if blob.is_executable() {
                     ObjectKind::Exec
                 } else {
@@ -69,7 +70,8 @@ impl<W: Write> PackWriter<W> {
                 };
                 let header = make_header(blob.object_id(), kind, blob.len());
                 self.inner.write_all(&header)?;
-                crate::copy_wide(&mut blob, &mut self.inner)?;
+                let mut content = blob.into_content()?;
+                util::copy_wide(&mut content, &mut self.inner)?;
             }
             Object::Tree(tree) => self.write_meta_object(&tree, ObjectKind::Tree)?,
             Object::Package(pkg) => self.write_meta_object(&pkg, ObjectKind::Package)?,
@@ -165,7 +167,7 @@ impl<R: Read> PackReader<R> {
             ObjectKind::Blob | ObjectKind::Exec => {
                 let reader = (&mut self.inner).take(len);
                 let is_executable = kind == ObjectKind::Exec;
-                let blob = Blob::from_reader(reader, is_executable)?;
+                let (blob, _) = Blob::from_reader(reader, is_executable)?;
                 Object::Blob(blob)
             }
             ObjectKind::Tree => {
@@ -211,19 +213,19 @@ impl<R: Read> Iterator for PackReader<R> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::io::{Seek, SeekFrom};
 
     use super::*;
-    use crate::{platform, Entry, Package, Platform, Tree};
+    use crate::{platform, Entry, Package, Platform, References, Tree};
 
     const PACKAGE_NAME: &str = "example";
     #[rustfmt::skip::macros(platform)]
     const PACKAGE_SYSTEM: Platform = platform!(x86_64-linux-gnu);
 
     fn example_objects() -> Vec<Object> {
-        let first = Object::Blob(Blob::from_bytes(b"hello".to_vec(), false));
-        let second = Object::Blob(Blob::from_bytes(b"hola".to_vec(), true));
+        let first = Object::Blob(Blob::from_bytes(b"hello".to_vec(), false).0);
+        let second = Object::Blob(Blob::from_bytes(b"hola".to_vec(), true).0);
         let third = Object::Tree({
             let mut entries = BTreeMap::new();
             entries.insert(
@@ -243,7 +245,7 @@ mod tests {
         let fourth = Object::Package(Package {
             name: PACKAGE_NAME.parse().unwrap(),
             system: PACKAGE_SYSTEM,
-            references: BTreeSet::new(),
+            references: References::new(),
             self_references: BTreeMap::new(),
             tree: third.object_id(),
         });
@@ -279,7 +281,7 @@ mod tests {
                 (3, Ok(Object::Package(p))) => {
                     assert_eq!(p.name.as_ref(), PACKAGE_NAME);
                     assert_eq!(p.system, PACKAGE_SYSTEM);
-                    assert_eq!(p.references, BTreeSet::new());
+                    assert_eq!(p.references, References::new());
                     assert_eq!(p.self_references, BTreeMap::new());
                     assert_eq!(p.tree, blob_ids[2]);
                 }

@@ -3,28 +3,30 @@
 pub use self::id::{HashWriter, Hasher, ObjectId};
 pub use self::name::{InstallName, PackageName};
 pub use self::platform::{Arch, Env, Os, Platform};
-
-pub(crate) use self::name::is_package_name;
+pub use self::reference::{Offsets, References};
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Cursor, Read, Write};
-use std::os::unix::fs::MetadataExt;
+use std::fs::File;
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::anyhow;
-use memmap::{Mmap, MmapOptions};
+use memmap::Mmap;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use self::reference::{ReferenceSink, RewriteSink};
 use self::spooled::SpooledTempFile;
+use crate::util;
 
 pub mod pack;
 
 mod id;
 mod name;
 mod platform;
+mod reference;
 mod spooled;
 
 const BLOB_FILE_EXT: &str = "blob";
@@ -187,10 +189,8 @@ impl ContentAddressable for Object {
 #[derive(Debug)]
 enum Kind {
     Inline(Cursor<Vec<u8>>),
-    Mmap(Cursor<Mmap>),
     Spooled(SpooledTempFile),
-    File(tempfile::NamedTempFile),
-    StoreFile(std::fs::File, PathBuf),
+    Store(PathBuf),
 }
 
 /// Represents a blob object, i.e. a regular file or executable.
@@ -208,15 +208,20 @@ pub struct Blob {
 
 impl Blob {
     /// Hashes and returns a new `Blob` object from the given buffer.
-    pub fn from_bytes(input: Vec<u8>, is_executable: bool) -> Self {
-        let mut hasher = id::Hasher::new_blob(is_executable);
-        hasher.update(&input);
-        Blob {
+    pub fn from_bytes(input: Vec<u8>, is_executable: bool) -> (Self, References) {
+        let hasher = id::Hasher::new_blob(is_executable);
+        let mut writer = ReferenceSink::new(id::HashWriter::with_hasher(hasher, std::io::sink()));
+        writer.write_all(&input).unwrap();
+        let (hasher, references) = writer.into_inner();
+
+        let blob = Blob {
             length: input.len() as u64,
             stream: Kind::Inline(Cursor::new(input)),
             is_executable,
-            object_id: hasher.finish(),
-        }
+            object_id: hasher.object_id(),
+        };
+
+        (blob, references)
     }
 
     /// Hashes and returns a new `Blob` object from the file located at `path`.
@@ -230,86 +235,24 @@ impl Blob {
     ///
     /// Returns `Err` if `path` does not exist or does not refer to a file, the user does not have
     /// permission to read the file, or another I/O error occurred.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        match open_for_large_read(path.as_ref())? {
-            Strategy::Inline(buffer, is_executable, length) => {
-                let mut hasher = id::Hasher::new_blob(is_executable);
-                hasher.update(buffer.get_ref());
-                Ok(Blob {
-                    stream: Kind::Inline(buffer),
-                    is_executable,
-                    length,
-                    object_id: hasher.finish(),
-                })
-            }
-            Strategy::Mmap(mmap, is_executable, length) => {
-                let mut hasher = id::Hasher::new_blob(is_executable);
-                hasher.par_update(mmap.get_ref());
-                Ok(Blob {
-                    stream: Kind::Mmap(mmap),
-                    is_executable,
-                    length,
-                    object_id: hasher.finish(),
-                })
-            }
-            Strategy::Io(mut file, is_executable, length) => {
-                let hasher = id::Hasher::new_blob(is_executable);
-                let temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
-                let mut writer = HashWriter::with_hasher(hasher, temp);
-                crate::copy_wide(&mut file, &mut writer)?;
-                Ok(Blob {
-                    object_id: writer.object_id(),
-                    stream: Kind::File(writer.into_inner()),
-                    is_executable,
-                    length,
-                })
-            }
-        }
+    pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<(Self, References)> {
+        util::open_large_read(
+            path.as_ref(),
+            |cursor, is_executable| Ok(Blob::from_bytes(cursor.into_inner(), is_executable)),
+            |mmap, is_executable| Blob::from_reader(mmap, is_executable),
+            |file, is_executable| Blob::from_reader(file, is_executable),
+        )
     }
 
-    /// Opens a `Blob` from a file path without hashing it, trusting the `object_id` to be correct.
-    pub(crate) fn from_path_unchecked(path: &Path, object_id: ObjectId) -> anyhow::Result<Self> {
-        match open_for_large_read(path)? {
-            Strategy::Inline(buffer, is_executable, length) => Ok(Blob {
-                stream: Kind::Inline(buffer),
-                is_executable,
-                length,
-                object_id,
-            }),
-            Strategy::Mmap(mmap, is_executable, length) => Ok(Blob {
-                stream: Kind::Mmap(mmap),
-                is_executable,
-                length,
-                object_id,
-            }),
-            Strategy::Io(file, is_executable, length) => Ok(Blob {
-                stream: Kind::StoreFile(file, path.to_owned()),
-                is_executable,
-                length,
-                object_id,
-            }),
-        }
-    }
-
-    /// Opens a `Blob` from a temp file without hashing it, trusting the `object_id` to be correct.
-    ///
-    /// # Safety
-    ///
-    /// This function does not ensure that the seek cursor is at offset 0. If this invariant is
-    /// violated, the `std::io::Read` implementation for `Blob` could produce unexpected results.
-    /// Use this method only in cases where the file is never read.
-    pub(crate) fn from_file_unchecked(
-        file: tempfile::NamedTempFile,
-        is_executable: bool,
-        length: u64,
-        object_id: ObjectId,
-    ) -> Self {
-        Blob {
-            stream: Kind::File(file),
-            is_executable,
-            length,
+    pub(crate) fn from_store_path(path: PathBuf, object_id: ObjectId) -> anyhow::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(&path)?;
+        Ok(Blob {
+            stream: Kind::Store(path),
+            is_executable: metadata.mode() & 0o100 != 0,
+            length: metadata.len(),
             object_id,
-        }
+        })
     }
 
     /// Hashes and returns a new `Blob` object from a reader.
@@ -318,24 +261,85 @@ impl Blob {
     /// on disk if the internal buffer grows beyond a 32 MB threshold.
     ///
     /// Returns `Err` if an I/O error occurred.
-    pub fn from_reader<R: Read>(mut reader: R, is_executable: bool) -> anyhow::Result<Self> {
-        let hasher = Hasher::new_blob(is_executable);
-        let spooled_writer = SpooledTempFile::new(32 * 1024 * 1024);
-        let mut writer = HashWriter::with_hasher(hasher, spooled_writer);
-        let length = crate::copy_wide(&mut reader, &mut writer)?;
+    pub fn from_reader<R>(mut reader: R, is_executable: bool) -> io::Result<(Self, References)>
+    where
+        R: Read,
+    {
+        let hasher = id::Hasher::new_blob(is_executable);
+        let spooled = SpooledTempFile::new(32 * 1024 * 1024);
+        let mut writer = ReferenceSink::new(id::HashWriter::with_hasher(hasher, spooled));
+        let length = util::copy_wide(&mut reader, &mut writer)?;
 
-        Ok(Blob {
-            object_id: writer.object_id(),
-            stream: Kind::Spooled(writer.into_inner()),
+        let (hasher, references) = writer.into_inner();
+        let object_id = hasher.object_id();
+        let spooled = hasher.into_inner();
+
+        let blob = Blob {
+            stream: Kind::Spooled(spooled),
             is_executable,
             length,
-        })
+            object_id,
+        };
+
+        Ok((blob, references))
+    }
+
+    pub(crate) fn from_reader_rewrite<R>(
+        mut reader: R,
+        is_executable: bool,
+        pattern: &Path,
+        replace: &Path,
+    ) -> anyhow::Result<(Self, References, Offsets)>
+    where
+        R: Read,
+    {
+        let hasher = id::Hasher::new_blob(is_executable);
+        let spooled = SpooledTempFile::new(32 * 1024 * 1024);
+        let scanner = ReferenceSink::new(id::HashWriter::with_hasher(hasher, spooled));
+        let mut writer = RewriteSink::new(scanner, pattern, replace)?;
+        let length = util::copy_wide(&mut reader, &mut writer)?;
+
+        let (rewrite, rep_offsets) = writer.into_inner()?;
+        let (hasher, references) = rewrite.into_inner();
+        let object_id = hasher.object_id();
+        let spooled = hasher.into_inner();
+
+        let blob = Blob {
+            stream: Kind::Spooled(spooled),
+            is_executable,
+            length,
+            object_id,
+        };
+
+        Ok((blob, references, rep_offsets))
     }
 
     /// Returns `true` if this blob has its executable bit set.
     #[inline]
     pub fn is_executable(&self) -> bool {
         self.is_executable
+    }
+
+    /// Consumes the blob and returns an I/O stream of its on-disk content.
+    ///
+    /// Returns `Err` if an I/O error occurred.
+    pub fn into_content(self) -> io::Result<impl Read + Seek> {
+        match self.stream {
+            Kind::Inline(mut cursor) => {
+                cursor.set_position(0);
+                Ok(Contents::Inline(cursor))
+            }
+            Kind::Spooled(mut spooled) => {
+                spooled.seek(SeekFrom::Start(0))?;
+                Ok(Contents::Spooled(spooled))
+            }
+            Kind::Store(path) => util::open_large_read(
+                &path,
+                |cursor, _| Ok(Contents::Inline(cursor)),
+                |mmap, _| Ok(Contents::Mmap(mmap)),
+                |file, _| Ok(Contents::File(file)),
+            ),
+        }
     }
 
     /// Persists the blob to disk with as little redundant copying as possible.
@@ -347,26 +351,16 @@ impl Blob {
                 let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                 temp.write_all(inner.get_ref())?;
                 temp.flush()?;
-                normalize_perms(temp.path(), mode)?;
-                temp.persist(dest).map(|_| {}).map_err(|e| e.error)
-            }
-            Kind::Mmap(mut inner) => {
-                let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
-                crate::copy_wide(&mut inner, &mut temp)?;
-                normalize_perms(temp.path(), mode)?;
+                util::normalize_perms(temp.path(), mode)?;
                 temp.persist(dest).map(|_| {}).map_err(|e| e.error)
             }
             Kind::Spooled(inner) => inner.persist(dest, mode),
-            Kind::File(inner) => {
-                normalize_perms(inner.path(), mode)?;
-                inner.persist(dest).map(|_| {}).map_err(|e| e.error)
-            }
-            Kind::StoreFile(_, src) if src == dest => panic!("cannot persist file to itself"),
-            Kind::StoreFile(_, src) => {
+            Kind::Store(src) if src == dest => panic!("cannot persist file to itself"),
+            Kind::Store(src) => {
                 let file_name = src.file_name().unwrap();
                 let temp_path = PathBuf::from("/var/tmp").join(file_name);
                 std::fs::copy(src, &temp_path)?;
-                normalize_perms(&temp_path, mode)?;
+                util::normalize_perms(&temp_path, mode)?;
                 std::fs::rename(&temp_path, dest)
             }
         };
@@ -389,51 +383,32 @@ impl ContentAddressable for Blob {
     }
 }
 
-impl Read for Blob {
+enum Contents {
+    Inline(Cursor<Vec<u8>>),
+    Mmap(Cursor<Mmap>),
+    File(File),
+    Spooled(SpooledTempFile),
+}
+
+impl Read for Contents {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.stream {
-            Kind::Inline(ref mut inner) => inner.read(buf),
-            Kind::Mmap(ref mut inner) => inner.read(buf),
-            Kind::Spooled(ref mut inner) => inner.read(buf),
-            Kind::File(ref mut inner) => inner.read(buf),
-            Kind::StoreFile(ref mut inner, _) => inner.read(buf),
+        match *self {
+            Contents::Inline(ref mut inner) => inner.read(buf),
+            Contents::Mmap(ref mut inner) => inner.read(buf),
+            Contents::File(ref mut inner) => inner.read(buf),
+            Contents::Spooled(ref mut inner) => inner.read(buf),
         }
     }
 }
 
-/// A list of possible file I/O strategies with the data contents, executable bit, and length.
-enum Strategy {
-    Inline(Cursor<Vec<u8>>, bool, u64),
-    Mmap(Cursor<Mmap>, bool, u64),
-    Io(std::fs::File, bool, u64),
-}
-
-/// Selects the most efficient strategy to open a file, optimized for massive sequential reads.
-fn open_for_large_read(file_path: &Path) -> anyhow::Result<Strategy> {
-    let mut file = std::fs::File::open(file_path)?;
-    let metadata = file.metadata()?;
-    let is_executable = metadata.mode() & 0o100 != 0;
-
-    if metadata.len() < 16 * 1024 {
-        // Not worth it to mmap(2) small files. Load into memory instead.
-        let mut buf = Vec::with_capacity(metadata.len() as usize);
-        file.read_to_end(&mut buf)?;
-        Ok(Strategy::Inline(
-            Cursor::new(buf),
-            is_executable,
-            metadata.len(),
-        ))
-    } else if metadata.len() <= isize::max_value() as u64 {
-        // Prefer memory-mapping files wherever possible for performance.
-        let mmap = unsafe { MmapOptions::new().len(metadata.len() as usize).map(&file)? };
-        Ok(Strategy::Mmap(
-            Cursor::new(mmap),
-            is_executable,
-            metadata.len(),
-        ))
-    } else {
-        // Only fall back to regular file I/O if file is too large to mmap(2).
-        Ok(Strategy::Io(file, is_executable, metadata.len()))
+impl Seek for Contents {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        match *self {
+            Contents::Inline(ref mut inner) => inner.seek(pos),
+            Contents::Mmap(ref mut inner) => inner.seek(pos),
+            Contents::File(ref mut inner) => inner.seek(pos),
+            Contents::Spooled(ref mut inner) => inner.seek(pos),
+        }
     }
 }
 
@@ -493,9 +468,9 @@ pub struct Package {
     /// The target platform it supports.
     pub system: Platform,
     /// Any other packages it references at run-time.
-    pub references: BTreeSet<ObjectId>,
-    /// Any blob objects which contain self-references and their byte offsets.
-    pub self_references: BTreeMap<ObjectId, BTreeSet<u64>>,
+    pub references: References,
+    /// Any blob objects which contain self-references.
+    pub self_references: BTreeMap<ObjectId, Offsets>,
     /// Output directory tree to be installed.
     pub tree: ObjectId,
 }
@@ -569,21 +544,11 @@ fn persist_json<T: Serialize>(val: &T, dest: &Path) -> anyhow::Result<()> {
     let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
     serde_json::to_writer(&mut temp, val)?;
     temp.flush()?;
-    normalize_perms(temp.path(), 0o444)?;
+    util::normalize_perms(temp.path(), 0o444)?;
 
     match temp.persist(dest) {
         Ok(_) => Ok(()),
         Err(_) if dest.is_file() => Ok(()),
         Err(e) => Err(e.into()),
     }
-}
-
-/// Normalizes file permissons for `p` and sets all timestamps to January 1st, 1970.
-fn normalize_perms(p: &Path, mode: u32) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let perms = std::fs::Permissions::from_mode(mode);
-    std::fs::set_permissions(p, perms)?;
-    filetime::set_file_atime(p, filetime::FileTime::zero())?;
-    filetime::set_file_mtime(p, filetime::FileTime::zero())?;
-    Ok(())
 }
