@@ -37,7 +37,6 @@ impl SpooledTempFile {
             Storage::InMemory(cursor) => {
                 let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                 temp.write_all(cursor.get_ref())?;
-                temp.flush()?;
                 util::normalize_perms(temp.path(), mode)?;
                 temp.persist(dst)?;
             }

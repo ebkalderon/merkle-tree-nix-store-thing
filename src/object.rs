@@ -320,7 +320,6 @@ impl Blob {
             Kind::Inline(inner) => {
                 let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                 temp.write_all(inner.get_ref())?;
-                temp.flush()?;
                 util::normalize_perms(temp.path(), mode)?;
                 temp.persist(dst).map(|_| {}).map_err(|e| e.error)
             }
@@ -550,7 +549,6 @@ impl ContentAddressable for Spec {
 fn persist_json<T: Serialize>(val: &T, dst: &Path) -> anyhow::Result<()> {
     let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
     serde_json::to_writer(&mut temp, val)?;
-    temp.flush()?;
     util::normalize_perms(temp.path(), 0o444)?;
 
     match temp.persist(dst) {
