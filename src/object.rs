@@ -352,6 +352,35 @@ impl ContentAddressable for Blob {
     }
 }
 
+enum Contents {
+    Inline(Cursor<Vec<u8>>),
+    Mmap(Cursor<Mmap>),
+    File(File),
+    Spooled(SpooledTempFile),
+}
+
+impl Read for Contents {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match *self {
+            Contents::Inline(ref mut inner) => inner.read(buf),
+            Contents::Mmap(ref mut inner) => inner.read(buf),
+            Contents::File(ref mut inner) => inner.read(buf),
+            Contents::Spooled(ref mut inner) => inner.read(buf),
+        }
+    }
+}
+
+impl Seek for Contents {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        match *self {
+            Contents::Inline(ref mut inner) => inner.seek(pos),
+            Contents::Mmap(ref mut inner) => inner.seek(pos),
+            Contents::File(ref mut inner) => inner.seek(pos),
+            Contents::Spooled(ref mut inner) => inner.seek(pos),
+        }
+    }
+}
+
 /// A writer which creates a new `Blob` from a byte stream.
 ///
 /// This struct is created by [`Blob::from_writer()`]. See its documentation for more.
@@ -386,35 +415,6 @@ impl Write for BlobWriter {
 
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
-    }
-}
-
-enum Contents {
-    Inline(Cursor<Vec<u8>>),
-    Mmap(Cursor<Mmap>),
-    File(File),
-    Spooled(SpooledTempFile),
-}
-
-impl Read for Contents {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match *self {
-            Contents::Inline(ref mut inner) => inner.read(buf),
-            Contents::Mmap(ref mut inner) => inner.read(buf),
-            Contents::File(ref mut inner) => inner.read(buf),
-            Contents::Spooled(ref mut inner) => inner.read(buf),
-        }
-    }
-}
-
-impl Seek for Contents {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        match *self {
-            Contents::Inline(ref mut inner) => inner.seek(pos),
-            Contents::Mmap(ref mut inner) => inner.seek(pos),
-            Contents::File(ref mut inner) => inner.seek(pos),
-            Contents::Spooled(ref mut inner) => inner.seek(pos),
-        }
     }
 }
 
