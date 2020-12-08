@@ -258,7 +258,7 @@ impl Blob {
     /// Hashes and returns a new `Blob` object from a reader.
     ///
     /// This will attempt to buffer the I/O stream into memory, spilling over into a temporary file
-    /// on disk if the internal buffer grows beyond a 32 MB threshold.
+    /// on disk if the internal buffer grows beyond a 1 MiB threshold.
     ///
     /// Returns `Err` if an I/O error occurred.
     pub fn from_reader<R>(mut reader: R, is_executable: bool) -> io::Result<(Self, References)>
@@ -266,7 +266,7 @@ impl Blob {
         R: Read,
     {
         let hasher = id::Hasher::new_blob(is_executable);
-        let spooled = SpooledTempFile::new(32 * 1024 * 1024);
+        let spooled = SpooledTempFile::new(1 * 1024 * 1024);
         let mut writer = ReferenceSink::new(id::HashWriter::with_hasher(hasher, spooled));
         let length = util::copy_wide(&mut reader, &mut writer)?;
 
@@ -294,7 +294,7 @@ impl Blob {
         R: Read,
     {
         let hasher = id::Hasher::new_blob(is_executable);
-        let spooled = SpooledTempFile::new(32 * 1024 * 1024);
+        let spooled = SpooledTempFile::new(1 * 1024 * 1024);
         let scanner = ReferenceSink::new(id::HashWriter::with_hasher(hasher, spooled));
         let mut writer = RewriteSink::new(scanner, pattern, replace)?;
         let length = util::copy_wide(&mut reader, &mut writer)?;
