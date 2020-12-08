@@ -244,7 +244,7 @@ impl Blob {
         )
     }
 
-    pub(crate) fn from_store_path(path: PathBuf, object_id: ObjectId) -> anyhow::Result<Self> {
+    pub(crate) fn from_store_path(path: PathBuf, object_id: ObjectId) -> io::Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::metadata(&path)?;
         Ok(Blob {
@@ -289,7 +289,7 @@ impl Blob {
         is_executable: bool,
         pattern: &Path,
         replace: &Path,
-    ) -> anyhow::Result<(Self, References, Offsets)>
+    ) -> io::Result<(Self, References, Offsets)>
     where
         R: Read,
     {

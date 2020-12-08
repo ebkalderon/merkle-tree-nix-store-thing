@@ -138,7 +138,10 @@ impl Objects for FsObjects {
         };
 
         match kind_exists {
-            Some(ObjectKind::Blob) => Blob::from_store_path(path, id).map(Object::Blob),
+            Some(ObjectKind::Blob) => {
+                let blob = Blob::from_store_path(path, id)?;
+                Ok(Object::Blob(blob))
+            }
             Some(ObjectKind::Tree) => {
                 let file = std::fs::File::open(path)?;
                 let tree = serde_json::from_reader(file)?;
