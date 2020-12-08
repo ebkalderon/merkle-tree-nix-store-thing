@@ -165,9 +165,10 @@ impl<R: Read> PackReader<R> {
         let (object_id, kind, len) = parse_header(header)?;
         let object = match kind {
             ObjectKind::Blob | ObjectKind::Exec => {
-                let reader = (&mut self.inner).take(len);
-                let is_executable = kind == ObjectKind::Exec;
-                let (blob, _) = Blob::from_reader(reader, is_executable)?;
+                let mut reader = (&mut self.inner).take(len);
+                let mut writer = Blob::from_writer(kind == ObjectKind::Exec);
+                util::copy_wide(&mut reader, &mut writer)?;
+                let (blob, _) = writer.finish();
                 Object::Blob(blob)
             }
             ObjectKind::Tree => {
@@ -224,9 +225,9 @@ mod tests {
     const PACKAGE_SYSTEM: Platform = platform!(x86_64-linux-gnu);
 
     fn example_objects() -> Vec<Object> {
-        let first = Object::Blob(Blob::from_bytes(b"hello".to_vec(), false).0);
-        let second = Object::Blob(Blob::from_bytes(b"hola".to_vec(), true).0);
-        let third = Object::Tree({
+        let (first, _) = Blob::from_bytes(b"hello".to_vec(), false);
+        let (second, _) = Blob::from_bytes(b"hola".to_vec(), true);
+        let third = {
             let mut entries = BTreeMap::new();
             entries.insert(
                 "regular.txt".into(),
@@ -241,16 +242,21 @@ mod tests {
                 },
             );
             Tree { entries }
-        });
-        let fourth = Object::Package(Package {
+        };
+        let fourth = Package {
             name: PACKAGE_NAME.parse().unwrap(),
             system: PACKAGE_SYSTEM,
             references: References::new(),
             self_references: BTreeMap::new(),
             tree: third.object_id(),
-        });
+        };
 
-        vec![first, second, third, fourth]
+        vec![
+            Object::Blob(first),
+            Object::Blob(second),
+            Object::Tree(third),
+            Object::Package(fourth),
+        ]
     }
 
     #[test]

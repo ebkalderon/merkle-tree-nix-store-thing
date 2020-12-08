@@ -1,9 +1,11 @@
 //! Types of Merkle tree objects.
 
-pub use self::id::{HashWriter, Hasher, ObjectId};
+pub use self::id::ObjectId;
 pub use self::name::{InstallName, PackageName};
 pub use self::platform::{Arch, Env, Os, Platform};
 pub use self::reference::{Offsets, References};
+
+pub(crate) use self::reference::RewriteSink;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -17,7 +19,8 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use self::reference::{ReferenceSink, RewriteSink};
+use self::id::HashWriter;
+use self::reference::ReferenceSink;
 use self::spooled::SpooledTempFile;
 use crate::util;
 
@@ -210,7 +213,7 @@ impl Blob {
     /// Hashes and returns a new `Blob` object from the given buffer.
     pub fn from_bytes(input: Vec<u8>, is_executable: bool) -> (Self, References) {
         let hasher = id::Hasher::new_blob(is_executable);
-        let mut writer = ReferenceSink::new(id::HashWriter::with_hasher(hasher, std::io::sink()));
+        let mut writer = ReferenceSink::new(HashWriter::with_hasher(hasher, std::io::sink()));
         writer.write_all(&input).unwrap();
         let (hasher, references) = writer.into_inner();
 
@@ -226,12 +229,16 @@ impl Blob {
 
     /// Hashes and returns a new `Blob` object from the file located at `path`.
     ///
-    /// This constructor is more efficent than passing `std::fs::File` into `Blob::from_reader()`.
-    /// It uses memory-mapping and multi-threaded hashing to rapidly process the file, falling back
-    /// to regular file I/O only if the file in question is too large to be memory-mapped.
+    /// This constructor is generally more efficient than [`Blob::from_writer()`]. It uses
+    /// memory-mapping and multi-threaded hashing whenever possible to rapidly process the file,
+    /// otherwise falling back to either:
     ///
-    /// When interacting with files on the local filesystem, prefer using this constructor over
-    /// `Blob::from_reader()` whenever possible.
+    /// 1. Regular buffered I/O only if the file in question is too large to be memory-mapped.
+    /// 2. Reading the entire file into memory if it is smaller than 16 KiB, where the cost of
+    ///    buffered file I/O or memory-mapping is usually not worth it.
+    ///
+    /// When processing files on the local filesystem, prefer using this constructor over
+    /// `Blob::from_writer()` whenever possible.
     ///
     /// Returns `Err` if `path` does not exist or does not refer to a file, the user does not have
     /// permission to read the file, or another I/O error occurred.
@@ -239,9 +246,31 @@ impl Blob {
         util::open_large_read(
             path.as_ref(),
             |cursor, is_executable| Ok(Blob::from_bytes(cursor.into_inner(), is_executable)),
-            |mmap, is_executable| Blob::from_reader(mmap, is_executable),
-            |file, is_executable| Blob::from_reader(file, is_executable),
+            |mmap, is_executable| {
+                let mut writer = Blob::from_writer(is_executable);
+                writer.write_all(mmap.get_ref())?;
+                Ok(writer.finish())
+            },
+            |mut file, is_executable| {
+                let mut writer = Blob::from_writer(is_executable);
+                util::copy_wide(&mut file, &mut writer)?;
+                Ok(writer.finish())
+            },
         )
+    }
+
+    /// Returns a writer which creates a new `Blob` object from a stream of bytes.
+    ///
+    /// This writer will initially buffer the I/O stream in memory, spilling over into a temporary
+    /// file on disk if the internal buffer grows beyond a 1 MiB threshold.
+    pub fn from_writer(is_executable: bool) -> BlobWriter {
+        let hasher = id::Hasher::new_blob(is_executable);
+        let spooled = SpooledTempFile::new(1 * 1024 * 1024);
+        BlobWriter {
+            inner: ReferenceSink::new(HashWriter::with_hasher(hasher, spooled)),
+            is_executable,
+            length: 0,
+        }
     }
 
     pub(crate) fn from_store_path(path: PathBuf, object_id: ObjectId) -> io::Result<Self> {
@@ -253,65 +282,6 @@ impl Blob {
             length: metadata.len(),
             object_id,
         })
-    }
-
-    /// Hashes and returns a new `Blob` object from a reader.
-    ///
-    /// This will attempt to buffer the I/O stream into memory, spilling over into a temporary file
-    /// on disk if the internal buffer grows beyond a 1 MiB threshold.
-    ///
-    /// Returns `Err` if an I/O error occurred.
-    pub fn from_reader<R>(mut reader: R, is_executable: bool) -> io::Result<(Self, References)>
-    where
-        R: Read,
-    {
-        let hasher = id::Hasher::new_blob(is_executable);
-        let spooled = SpooledTempFile::new(1 * 1024 * 1024);
-        let mut writer = ReferenceSink::new(id::HashWriter::with_hasher(hasher, spooled));
-        let length = util::copy_wide(&mut reader, &mut writer)?;
-
-        let (hasher, references) = writer.into_inner();
-        let object_id = hasher.object_id();
-        let spooled = hasher.into_inner();
-
-        let blob = Blob {
-            stream: Kind::Spooled(spooled),
-            is_executable,
-            length,
-            object_id,
-        };
-
-        Ok((blob, references))
-    }
-
-    pub(crate) fn from_reader_rewrite<R>(
-        mut reader: R,
-        is_executable: bool,
-        pattern: &Path,
-        replace: &Path,
-    ) -> io::Result<(Self, References, Offsets)>
-    where
-        R: Read,
-    {
-        let hasher = id::Hasher::new_blob(is_executable);
-        let spooled = SpooledTempFile::new(1 * 1024 * 1024);
-        let scanner = ReferenceSink::new(id::HashWriter::with_hasher(hasher, spooled));
-        let mut writer = RewriteSink::new(scanner, pattern, replace)?;
-        let length = util::copy_wide(&mut reader, &mut writer)?;
-
-        let (rewrite, rep_offsets) = writer.into_inner()?;
-        let (hasher, references) = rewrite.into_inner();
-        let object_id = hasher.object_id();
-        let spooled = hasher.into_inner();
-
-        let blob = Blob {
-            stream: Kind::Spooled(spooled),
-            is_executable,
-            length,
-            object_id,
-        };
-
-        Ok((blob, references, rep_offsets))
     }
 
     /// Returns `true` if this blob has its executable bit set.
@@ -380,6 +350,43 @@ impl ContentAddressable for Blob {
 
     fn len(&self) -> u64 {
         self.length
+    }
+}
+
+/// A writer which creates a new `Blob` from a byte stream.
+///
+/// This struct is created by [`Blob::from_writer()`]. See its documentation for more.
+#[derive(Debug)]
+pub struct BlobWriter {
+    inner: ReferenceSink<HashWriter<SpooledTempFile>>,
+    is_executable: bool,
+    length: u64,
+}
+
+impl BlobWriter {
+    /// Returns the finished `Blob` and its run-time references, if any were detected.
+    pub fn finish(self) -> (Blob, References) {
+        let (hasher, references) = self.inner.into_inner();
+        let blob = Blob {
+            object_id: hasher.object_id(),
+            stream: Kind::Spooled(hasher.into_inner()),
+            is_executable: self.is_executable,
+            length: self.length,
+        };
+
+        (blob, references)
+    }
+}
+
+impl Write for BlobWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let len = self.inner.write(buf)?;
+        self.length += len as u64;
+        Ok(len)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
     }
 }
 

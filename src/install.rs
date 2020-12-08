@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 use anyhow::{anyhow, Context};
 
 use crate::local::Packages;
+use crate::object::RewriteSink;
 use crate::{
     util, Backend, Blob, Entry, Object, ObjectId, Offsets, Package, Platform, References, Spec,
     Store, Tree,
@@ -174,7 +175,7 @@ fn make_content_addressed(
     debug_assert!(file.starts_with(out_dir));
     debug_assert!(pkgs_dir.is_absolute());
 
-    let (reader, is_executable) = util::open_large_read::<(Box<dyn Read>, _), _, _, _>(
+    let (mut reader, is_executable) = util::open_large_read::<(Box<dyn Read>, _), _, _, _>(
         file,
         |cursor, is_executable| Ok((Box::new(cursor), is_executable)),
         |mmap, is_executable| Ok((Box::new(mmap), is_executable)),
@@ -202,8 +203,11 @@ fn make_content_addressed(
     ));
 
     // Rewrite any self-references to the install dir with a zeroed-out placeholder install dir.
-    let (blob, mut references, offsets) =
-        Blob::from_reader_rewrite(reader, is_executable, out_dir, &zeroed_install_dir)?;
+    let writer = Blob::from_writer(is_executable);
+    let mut rewrite = RewriteSink::new(writer, out_dir, &zeroed_install_dir)?;
+    util::copy_wide(&mut reader, &mut rewrite)?;
+    let (writer, offsets) = rewrite.into_inner()?;
+    let (blob, mut references) = writer.finish();
 
     // Do not count the placeholder hash as a reference.
     references.remove(&ObjectId::zero());

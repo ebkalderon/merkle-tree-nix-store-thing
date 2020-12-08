@@ -7,7 +7,7 @@ fn main() -> anyhow::Result<()> {
     let mut store: Store = Store::init("./store")?;
 
     let txt_id = store.insert_object(Object::Blob(
-        Blob::from_reader(std::io::Cursor::new(b"foobarbaz".to_vec()), false)?.0,
+        Blob::from_bytes(b"foobarbaz".to_vec(), false).0,
     ))?;
     let rs_id = store.insert_object(Object::Blob(
         Blob::from_bytes(b"fn main() {}".to_vec(), false).0,
