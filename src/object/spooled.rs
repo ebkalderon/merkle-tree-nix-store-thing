@@ -32,18 +32,18 @@ impl SpooledTempFile {
     /// If the buffer is held in main memory, it is copied to a temporary file and atomically moved
     /// to the final destination. If the buffer has already spilled over to disk, the already
     /// existing temporary file is simply moved to the final destination, no extra copying needed.
-    pub fn persist(self, dest: &Path, mode: u32) -> io::Result<()> {
+    pub fn persist(self, dst: &Path, mode: u32) -> io::Result<()> {
         match self.inner {
             Storage::InMemory(cursor) => {
                 let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
                 temp.write_all(cursor.get_ref())?;
                 temp.flush()?;
                 util::normalize_perms(temp.path(), mode)?;
-                temp.persist(dest)?;
+                temp.persist(dst)?;
             }
             Storage::OnDisk(file) => {
                 util::normalize_perms(file.path(), mode)?;
-                file.persist(dest)?;
+                file.persist(dst)?;
             }
         }
 

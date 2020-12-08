@@ -86,11 +86,11 @@ impl<B: Backend> Store<B> {
     /// Returns `Err` if any of the given object IDs do not exist in this store, any of the object
     /// IDs do not refer to a `Package` object, a cycle or structural inconsistency is detected in
     /// the reference graph, or an I/O error occurred.
-    pub fn compute_delta<R>(&self, pkgs: BTreeSet<ObjectId>, dest: &R) -> anyhow::Result<Delta>
+    pub fn compute_delta<R>(&self, pkgs: BTreeSet<ObjectId>, dst: &R) -> anyhow::Result<Delta>
     where
         R: Remote + ?Sized,
     {
-        closure::find_delta(self, dest, pkgs)
+        closure::find_delta(self, dst, pkgs)
     }
 
     /// Iterates over the closure and lazily yields each element in reverse topological order.

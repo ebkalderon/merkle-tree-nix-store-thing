@@ -313,7 +313,7 @@ impl Blob {
     }
 
     /// Persists the blob to disk with as little redundant copying as possible.
-    pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
+    pub(crate) fn persist(self, dst: &Path) -> anyhow::Result<()> {
         let mode = if self.is_executable { 0o544 } else { 0o444 };
 
         let result = match self.stream {
@@ -322,22 +322,22 @@ impl Blob {
                 temp.write_all(inner.get_ref())?;
                 temp.flush()?;
                 util::normalize_perms(temp.path(), mode)?;
-                temp.persist(dest).map(|_| {}).map_err(|e| e.error)
+                temp.persist(dst).map(|_| {}).map_err(|e| e.error)
             }
-            Kind::Spooled(inner) => inner.persist(dest, mode),
-            Kind::Store(src) if src == dest => panic!("cannot persist file to itself"),
+            Kind::Spooled(inner) => inner.persist(dst, mode),
+            Kind::Store(src) if src == dst => panic!("cannot persist file to itself"),
             Kind::Store(src) => {
                 let file_name = src.file_name().unwrap();
                 let temp_path = PathBuf::from("/var/tmp").join(file_name);
                 std::fs::copy(src, &temp_path)?;
                 util::normalize_perms(&temp_path, mode)?;
-                std::fs::rename(&temp_path, dest)
+                std::fs::rename(&temp_path, dst)
             }
         };
 
         match result {
             Ok(_) => Ok(()),
-            Err(_) if dest.is_file() => Ok(()),
+            Err(_) if dst.is_file() => Ok(()),
             Err(e) => Err(e.into()),
         }
     }
@@ -447,9 +447,9 @@ impl Tree {
         })
     }
 
-    /// Persists object to disk as a read-only JSON file located at `dest`.
-    pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
-        persist_json(&self, dest)
+    /// Persists object to disk as a read-only JSON file located at `dst`.
+    pub(crate) fn persist(self, dst: &Path) -> anyhow::Result<()> {
+        persist_json(&self, dst)
     }
 }
 
@@ -488,9 +488,9 @@ impl Package {
         InstallName::new(&self.name, self.object_id())
     }
 
-    /// Persists object to disk as a read-only JSON file located at `dest`.
-    pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
-        persist_json(&self, dest)
+    /// Persists object to disk as a read-only JSON file located at `dst`.
+    pub(crate) fn persist(self, dst: &Path) -> anyhow::Result<()> {
+        persist_json(&self, dst)
     }
 }
 
@@ -529,9 +529,9 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// Persists object to disk as a read-only JSON file located at `dest`.
-    pub(crate) fn persist(self, dest: &Path) -> anyhow::Result<()> {
-        persist_json(&self, dest)
+    /// Persists object to disk as a read-only JSON file located at `dst`.
+    pub(crate) fn persist(self, dst: &Path) -> anyhow::Result<()> {
+        persist_json(&self, dst)
     }
 }
 
@@ -546,16 +546,16 @@ impl ContentAddressable for Spec {
     }
 }
 
-/// Persists `val` to disk as a read-only JSON file located at `dest`.
-fn persist_json<T: Serialize>(val: &T, dest: &Path) -> anyhow::Result<()> {
+/// Persists `val` to disk as a read-only JSON file located at `dst`.
+fn persist_json<T: Serialize>(val: &T, dst: &Path) -> anyhow::Result<()> {
     let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
     serde_json::to_writer(&mut temp, val)?;
     temp.flush()?;
     util::normalize_perms(temp.path(), 0o444)?;
 
-    match temp.persist(dest) {
+    match temp.persist(dst) {
         Ok(_) => Ok(()),
-        Err(_) if dest.is_file() => Ok(()),
+        Err(_) if dst.is_file() => Ok(()),
         Err(e) => Err(e.into()),
     }
 }
