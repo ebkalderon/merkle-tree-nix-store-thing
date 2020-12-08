@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::Path;
 
-use anyhow::anyhow;
 use nom::bytes::complete::{self, tag};
 use nom::bytes::streaming::take;
 use nom::character::complete::{anychar, hex_digit1};
@@ -43,16 +42,19 @@ impl<W: Write> RewriteSink<W> {
     /// The length of `replace` must be less than or equal to the length of `pattern`. If `replace`
     /// is shorter than `pattern`, it is padded with `/` characters until the lengths match.
     /// However, if `replace` is longer than `pattern`, this function returns an error.
-    pub fn new(inner: W, pattern: &Path, replace: &Path) -> anyhow::Result<Self> {
+    pub fn new(inner: W, pattern: &Path, replace: &Path) -> io::Result<Self> {
         let pat = pattern.to_string_lossy().into_owned().into_bytes();
         let mut rep = replace.to_string_lossy().into_owned().into_bytes();
 
         if rep.len() < pat.len() {
             rep.extend(vec![b'/'; pat.len() - rep.len()]);
         } else if rep.len() > rep.len() {
-            return Err(anyhow!(
-                "new path {} is longer than old path, binary text replacement is impossible",
-                replace.display()
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "new path {} is longer than old path, binary text replacement is impossible",
+                    replace.display()
+                ),
             ));
         }
 
