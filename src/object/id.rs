@@ -200,7 +200,13 @@ impl<W: Write> HashWriter<W> {
 impl<W: Write> Write for HashWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let len = self.inner.write(buf)?;
-        self.hasher.update(&buf[0..len]);
+
+        if len >= 128 * 1024 * 1024 {
+            self.hasher.par_update(&buf[..len]);
+        } else {
+            self.hasher.update(&buf[..len]);
+        }
+
         Ok(len)
     }
 
