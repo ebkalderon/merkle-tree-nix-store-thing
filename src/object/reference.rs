@@ -159,7 +159,8 @@ impl<W: Write> Write for ReferenceSink<W> {
             Err(_) => self.buf.clear(),
             Ok((remaining, pkg_id)) => {
                 self.refs.extend(pkg_id);
-                self.buf = remaining.to_vec();
+                let consumed = self.buf.len() - remaining.len();
+                self.buf.drain(..consumed);
             }
         }
 
