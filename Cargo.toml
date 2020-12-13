@@ -13,7 +13,7 @@ hex = { version = "0.4.2", features = ["serde"] }
 goblin = "0.3.0"
 infer = "0.3.2"
 memmap = "0.7.0"
-nom = "6.0.1"
+nom = { version = "6.0.1", default-features = false, features = ["alloc"] }
 pathdiff = "0.2.0"
 semver = { version = "0.11.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
