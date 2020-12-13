@@ -9,6 +9,7 @@ pub(crate) use self::reference::RewriteSink;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
+use std::hash::Hash;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -419,7 +420,7 @@ impl Write for BlobWriter {
 }
 
 /// A list of possible entries inside of a directory tree.
-#[derive(Clone, Debug, Hash, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum Entry {
     Tree { id: ObjectId },
@@ -430,7 +431,7 @@ pub enum Entry {
 /// Represents a directory tree object.
 ///
 /// Tree objects are only one level deep and may contain other trees, blobs, and symlinks.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
 pub struct Tree {
     /// File names mapped to directory entries in the tree.
     pub entries: BTreeMap<String, Entry>,
@@ -445,21 +446,21 @@ impl Tree {
             Entry::Symlink { .. } => None,
         })
     }
+}
 
-    /// Persists object to disk as a read-only JSON file located at `dst`.
-    pub(crate) fn persist(self, dst: &Path) -> anyhow::Result<()> {
-        persist_json(&self, dst)
+impl Metadata for Tree {
+    fn hasher() -> id::Hasher {
+        id::Hasher::new_tree()
     }
 }
 
 impl ContentAddressable for Tree {
     fn object_id(&self) -> ObjectId {
-        let json = serde_json::to_vec(self).unwrap();
-        id::Hasher::new_tree().update(&json).finish()
+        self.interned_id_len().0
     }
 
     fn len(&self) -> u64 {
-        serde_json::to_vec(self).unwrap().len() as u64
+        self.interned_id_len().1
     }
 }
 
@@ -486,26 +487,26 @@ impl Package {
     pub fn install_name(&self) -> InstallName {
         InstallName::new(&self.name, self.object_id())
     }
+}
 
-    /// Persists object to disk as a read-only JSON file located at `dst`.
-    pub(crate) fn persist(self, dst: &Path) -> anyhow::Result<()> {
-        persist_json(&self, dst)
+impl Metadata for Package {
+    fn hasher() -> id::Hasher {
+        id::Hasher::new_package()
     }
 }
 
 impl ContentAddressable for Package {
     fn object_id(&self) -> ObjectId {
-        let json = serde_json::to_vec(self).unwrap();
-        id::Hasher::new_package().update(&json).finish()
+        self.interned_id_len().0
     }
 
     fn len(&self) -> u64 {
-        serde_json::to_vec(self).unwrap().len() as u64
+        self.interned_id_len().1
     }
 }
 
 /// Represents a package specification object.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Hash, Deserialize, Serialize)]
 pub struct Spec {
     /// The human-readable name.
     pub name: PackageName,
@@ -527,33 +528,63 @@ pub struct Spec {
     pub builder: String,
 }
 
-impl Spec {
-    /// Persists object to disk as a read-only JSON file located at `dst`.
-    pub(crate) fn persist(self, dst: &Path) -> anyhow::Result<()> {
-        persist_json(&self, dst)
+impl Metadata for Spec {
+    fn hasher() -> id::Hasher {
+        id::Hasher::new_spec()
     }
 }
 
 impl ContentAddressable for Spec {
     fn object_id(&self) -> ObjectId {
-        let json = serde_json::to_vec(self).unwrap();
-        id::Hasher::new_spec().update(&json).finish()
+        self.interned_id_len().0
     }
 
     fn len(&self) -> u64 {
-        serde_json::to_vec(self).unwrap().len() as u64
+        self.interned_id_len().1
     }
 }
 
-/// Persists `val` to disk as a read-only JSON file located at `dst`.
-fn persist_json<T: Serialize>(val: &T, dst: &Path) -> anyhow::Result<()> {
-    let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
-    serde_json::to_writer(&mut temp, val)?;
-    util::normalize_perms(temp.path(), 0o444)?;
+/// Describes Merkle tree objects that contain only metadata.
+pub(crate) trait Metadata: Serialize + Hash + Sized {
+    /// Hasher to use when computing the object ID.
+    fn hasher() -> id::Hasher;
 
-    match temp.persist(dst) {
-        Ok(_) => Ok(()),
-        Err(_) if dst.is_file() => Ok(()),
-        Err(e) => Err(e.into()),
+    /// Returns the object ID and on-disk length of the object.
+    fn interned_id_len(&self) -> (ObjectId, u64) {
+        use cached::{Cached, SizedCache};
+        use once_cell::sync::Lazy;
+        use std::hash::Hasher;
+        use std::sync::Mutex;
+
+        static INTERNED: Lazy<Mutex<SizedCache<u64, (ObjectId, u64)>>> =
+            Lazy::new(|| Mutex::new(SizedCache::with_size(100)));
+
+        let hash = {
+            let mut hasher = fnv::FnvHasher::default();
+            self.hash(&mut hasher);
+            hasher.finish()
+        };
+
+        INTERNED
+            .lock()
+            .unwrap()
+            .cache_get_or_set_with(hash, || {
+                let json = serde_json::to_vec(self).unwrap();
+                (Self::hasher().update(&json).finish(), json.len() as u64)
+            })
+            .clone()
+    }
+
+    /// Persists the object to disk as a read-only JSON file located at `dst`.
+    fn persist(self, dst: &Path) -> anyhow::Result<()> {
+        let mut temp = tempfile::NamedTempFile::new_in("/var/tmp")?;
+        serde_json::to_writer(&mut temp, &self)?;
+        util::normalize_perms(temp.path(), 0o444)?;
+
+        match temp.persist(dst) {
+            Ok(_) => Ok(()),
+            Err(_) if dst.is_file() => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 }

@@ -7,8 +7,8 @@ use filetime::FileTime;
 
 use super::{Backend, Objects, Packages};
 use crate::{
-    install, Blob, ContentAddressable, Entry, InstallName, Object, ObjectId, ObjectKind, Package,
-    Tree,
+    install, Blob, ContentAddressable, Entry, InstallName, Metadata, Object, ObjectId, ObjectKind,
+    Package, Tree,
 };
 
 const OBJECTS_SUBDIR: &str = "objects";
