@@ -224,21 +224,18 @@ fn patch_elf_rpaths_with_prefix(prefix: &Path, executable: &Path) -> anyhow::Res
     debug_assert!(executable.starts_with(prefix));
 
     fn get_rpaths(exec: &Path) -> anyhow::Result<Vec<PathBuf>> {
-        let mut cmd = Command::new(PATCHELF_BIN);
-        let output = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .arg("--print-rpath")
-            .arg(exec)
-            .output()?;
+        use goblin::elf64::dynamic::DT_RPATH;
 
-        if output.status.success() {
-            let stdout = std::str::from_utf8(&output.stdout)?;
-            Ok(stdout.split(":").map(PathBuf::from).collect())
-        } else {
-            let stderr = std::str::from_utf8(&output.stderr)?;
-            Err(anyhow!("{:?} returned non-zero status: [{}]", cmd, stderr))
-        }
+        let bytes = std::fs::read(exec)?;
+        let elf = goblin::elf::Elf::parse(&bytes)?;
+        let rpaths = elf
+            .dynamic
+            .as_ref()
+            .and_then(|d| d.dyns.iter().find(|entry| entry.d_tag == DT_RPATH))
+            .and_then(|entry| elf.dynstrtab.get(entry.d_val as usize))
+            .unwrap_or(Ok(""))?;
+
+        Ok(rpaths.split(":").map(PathBuf::from).collect())
     }
 
     fn replace_prefix_with_origin(rpaths: &mut [PathBuf], prefix: &Path, origin: &Path) {
