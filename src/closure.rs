@@ -5,190 +5,163 @@ use std::hash::Hash;
 
 use anyhow::anyhow;
 
-use crate::remote::Remote;
-use crate::{Backend, ObjectId, ObjectKind, Objects, Store};
+use crate::{ObjectId, ObjectKind, Objects};
 
 /// A filesystem closure for one or more packages.
 ///
 /// Closures describe the complete reference graph for a package or set of packages. References
 /// might include individual files (blobs), directory trees, and other packages that the root
 /// requires at run-time or at build-time.
-#[derive(Clone, Debug, Hash, PartialEq)]
+///
+/// Inside this closure is a topologically sorted list of Merkle tree objects, with packages sorted
+/// first, followed by blobs and directory trees, and trailed by build specs.
+///
+/// This sorting is important because it ensures objects and packages get inserted into the store
+/// in a consistent order, where all references are inserted into the store before their referrers.
+#[derive(Debug)]
 pub struct Closure(Vec<(ObjectId, ObjectKind)>);
 
-impl Iterator for Closure {
-    type Item = (ObjectId, ObjectKind);
-
+impl Closure {
+    /// Returns the number of elements in the closure.
     #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.pop()
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.0.len(), Some(self.0.len()))
-    }
-}
-
-impl ExactSizeIterator for Closure {
-    #[inline]
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.0.len()
     }
 }
 
-/// Compute the filesystem closure for the given package set.
-pub fn compute<B: Backend>(store: &Store<B>, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
-    let refs = pkgs
-        .into_iter()
-        .map(|id| (id, ObjectKind::Package))
-        .collect();
+impl IntoIterator for Closure {
+    type Item = (ObjectId, ObjectKind);
+    type IntoIter = std::vec::IntoIter<Self::Item>;
 
-    let closure = topo_sort(refs, |(id, kind)| match kind {
-        ObjectKind::Blob => Ok(BTreeSet::new()),
-        ObjectKind::Tree => {
-            let tree = store.objects.get_tree(id)?;
-            Ok(tree.references().collect())
-        }
-        ObjectKind::Package => {
-            let p = store.objects.get_package(id)?;
-            let tree_ref = (p.tree, ObjectKind::Tree);
-            Ok(p.references
-                .into_iter()
-                .map(|id| (id, ObjectKind::Package))
-                .chain(std::iter::once(tree_ref))
-                .collect())
-        }
-        ObjectKind::Spec => unimplemented!(),
-    })?;
-
-    Ok(Closure(closure))
-}
-
-/// A partial closure describing the delta between a local and remote package store.
-#[derive(Debug)]
-pub struct Delta {
-    /// Number of objects already present on the remote.
-    pub num_present: usize,
-    /// Closure of objects known to be missing on the remote.
-    pub missing: Closure,
-}
-
-/// Resolve the delta closure for the given package set between `src` and `dst`.
-pub fn find_delta<B, R>(src: &Store<B>, dst: &R, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Delta>
-where
-    B: Backend,
-    R: Remote + ?Sized,
-{
-    // This delta computation technique was shamelessly stolen from Git, as documented
-    // meticulously in these two pages:
-    //
-    // https://matthew-brett.github.io/curious-git/git_push_algorithm.html
-    // https://github.com/git/git/blob/master/Documentation/technical/pack-protocol.txt
-
-    let mut num_present = 0;
-
-    let refs = pkgs
-        .into_iter()
-        .map(|id| (id, ObjectKind::Package))
-        .collect();
-
-    let missing_pkgs = topo_sort_partial(refs, |(id, kind)| {
-        let p = src.objects.get_package(id)?;
-        if dst.contains_object(&id, Some(kind))? {
-            num_present += 1;
-            Ok(Include::No)
-        } else {
-            let refs = p.references.into_iter().map(|id| (id, kind)).collect();
-            Ok(Include::Yes(refs))
-        }
-    })?;
-
-    let mut trees = BTreeSet::new();
-    for (id, _) in &missing_pkgs {
-        let p = src.objects.get_package(*id)?;
-        trees.insert((p.tree, ObjectKind::Tree));
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
-
-    let missing_content = topo_sort_partial(trees, |(id, kind)| match kind {
-        ObjectKind::Blob | ObjectKind::Tree if dst.contains_object(&id, Some(kind))? => {
-            num_present += 1;
-            Ok(Include::No)
-        }
-        ObjectKind::Blob => Ok(Include::Yes(BTreeSet::new())),
-        ObjectKind::Tree => {
-            let tree = src.objects.get_tree(id)?;
-            Ok(Include::Yes(tree.references().collect()))
-        }
-        ObjectKind::Package => Err(anyhow!("tree object cannot reference package object")),
-        ObjectKind::Spec => unimplemented!(),
-    })?;
-
-    Ok(Delta {
-        num_present,
-        missing: Closure(missing_pkgs.into_iter().chain(missing_content).collect()),
-    })
 }
 
-/// A node in the reference graph.
-type Node = (ObjectId, ObjectKind);
-
-/// Control flow for the `get_children` closure.
-enum Include {
-    /// Indicates that the node should be included in the closure and descend into its child nodes.
-    Yes(BTreeSet<Node>),
-    /// Indicates that the node should not be included in the closure.
-    No,
-}
-
-/// Performs a depth-first search of a directed acyclic graph (DAG), descending from the given root
-/// nodes in `items` and retrieving their child nodes with the `get_children` lambda, and produces
-/// a topologically sorted list of references, where if tree object `P` depends on `Q`, then `P` is
-/// ordered before `Q` in the list.
+/// Compute the filesystem closure for the given package set.
 ///
-/// This sorting is important because it ensures objects and packages get inserted into the store
-/// in a consistent order, where all references are inserted into the store before their referrers.
-fn topo_sort<F>(items: BTreeSet<Node>, mut get_children: F) -> anyhow::Result<Vec<Node>>
+/// The `filter` closure is used to determine whether the given object should be included in the
+/// closure. Given an object, the closure must return `Ok(true)` or `Ok(false)`, with `Err` being
+/// reserved for I/O errors. The returned `Closure` will only contain objects for which the closure
+/// returns `Ok(true)`.
+pub fn compute<O, F>(obj: &O, pkgs: BTreeSet<ObjectId>, mut filter: F) -> anyhow::Result<Closure>
 where
-    F: FnMut(Node) -> anyhow::Result<BTreeSet<Node>>,
+    O: Objects + ?Sized,
+    F: FnMut(ObjectId, ObjectKind) -> anyhow::Result<bool>,
 {
-    topo_sort_partial(items, |item| get_children(item).map(Include::Yes))
+    let root_objects = pkgs
+        .into_iter()
+        .map(|id| (id, ObjectKind::Package))
+        .collect();
+
+    let closure = incremental_topo_sort(
+        root_objects,
+        |(id, kind)| match kind {
+            ObjectKind::Blob => Ok(BTreeSet::new()),
+            ObjectKind::Tree => {
+                let tree = obj.get_tree(id)?;
+                Ok(tree.references().collect())
+            }
+            ObjectKind::Package => {
+                let pkg = obj.get_package(id)?;
+                Ok(pkg
+                    .references
+                    .into_iter()
+                    .map(|id| (id, kind))
+                    .chain(std::iter::once((pkg.tree, ObjectKind::Tree)))
+                    .collect())
+            }
+            ObjectKind::Spec => {
+                let spec = obj.get_spec(id)?;
+                Ok(spec
+                    .dependencies
+                    .into_iter()
+                    .chain(spec.build_dependencies)
+                    .map(|id| (id, kind))
+                    .collect())
+            }
+        },
+        |(id, kind)| filter(id, kind),
+        |item, parent_item| {
+            anyhow!(
+                "detected cycle in closure reference graph: {} -> {}",
+                item.0,
+                parent_item.0
+            )
+        },
+    )?;
+
+    let ordered = {
+        let mut pkgs = Vec::new();
+        let mut content = Vec::new();
+        let mut specs = Vec::new();
+
+        for (id, kind) in closure {
+            match kind {
+                ObjectKind::Package => pkgs.push((id, kind)),
+                ObjectKind::Spec => specs.push((id, kind)),
+                _ => content.push((id, kind)),
+            }
+        }
+
+        pkgs.into_iter().chain(content).chain(specs).collect()
+    };
+
+    Ok(Closure(ordered))
 }
 
-/// Similar to `topo_sort()`, but with the option to skip nodes and return a partial result.
+/// Returns a topologically sorted list of all nodes reachable from `initial_items`, where if tree
+/// object `P` depends on `Q`, then `P` is ordered before `Q` in the list.
 ///
-/// If `get_children` returns `Ok(Include::Yes(children))`, it indicates that we should
-/// include the current node in the closure and descend further in the child nodes. However, if
-/// `get_children` returns `Ok(Include::No)`, it means that we should not include the
-/// current node in the closure and not attempt to descend any further.
-fn topo_sort_partial<F>(items: BTreeSet<Node>, get_children: F) -> anyhow::Result<Vec<Node>>
+/// This function performs a depth-first search on a directed acyclic graph, descending from the
+/// root nodes in `initial_items` and retrieving their child nodes with the `get_children` lambda.
+///
+/// The `filter` closure allows us to determine whether to abandon the ongoing depth-first search
+/// in favor of the next item in the `initial_items` set.
+fn incremental_topo_sort<T, F1, F2, F3>(
+    initial_items: BTreeSet<T>,
+    get_children: F1,
+    filter: F2,
+    cycle_error: F3,
+) -> anyhow::Result<Vec<T>>
 where
-    F: FnMut(Node) -> anyhow::Result<Include>,
+    T: Copy + Eq + Hash + Ord,
+    F1: FnMut(T) -> anyhow::Result<BTreeSet<T>>,
+    F2: FnMut(T) -> anyhow::Result<bool>,
+    F3: FnMut(T, T) -> anyhow::Error,
 {
     // Use a struct with fields and methods because recursive closures are impossible in Rust.
-    struct ClosureBuilder<'a, F> {
-        initial_items: &'a BTreeSet<Node>,
-        get_children: F,
-        visited: HashSet<Node>,
-        parents: HashSet<Node>,
-        topo_sorted_items: Vec<Node>,
+    struct DfsSorter<'a, T, F1, F2, F3> {
+        initial_items: &'a BTreeSet<T>,
+        get_children: F1,
+        filter: F2,
+        cycle_error: F3,
+        visited: HashSet<T>,
+        parents: HashSet<T>,
+        topo_sorted_items: Vec<T>,
     }
 
-    impl<'a, F> ClosureBuilder<'a, F>
+    impl<'a, T, F1, F2, F3> DfsSorter<'a, T, F1, F2, F3>
     where
-        F: FnMut(Node) -> anyhow::Result<Include>,
+        T: Copy + Eq + Hash + Ord,
+        F1: FnMut(T) -> anyhow::Result<BTreeSet<T>>,
+        F2: FnMut(T) -> anyhow::Result<bool>,
+        F3: FnMut(T, T) -> anyhow::Error,
     {
-        pub fn new(initial_items: &'a BTreeSet<Node>, get_children: F) -> Self {
-            ClosureBuilder {
-                initial_items,
+        pub fn new(items: &'a BTreeSet<T>, get_children: F1, filter: F2, cycle_error: F3) -> Self {
+            DfsSorter {
+                initial_items: items,
                 get_children,
+                filter,
+                cycle_error,
                 visited: HashSet::new(),
                 parents: HashSet::new(),
                 topo_sorted_items: Vec::new(),
             }
         }
 
-        pub fn compute(mut self) -> anyhow::Result<Vec<Node>> {
+        pub fn compute(mut self) -> anyhow::Result<Vec<T>> {
             for item in self.initial_items {
                 self.visit_dfs(*item, None)?;
             }
@@ -198,14 +171,10 @@ where
             Ok(self.topo_sorted_items)
         }
 
-        fn visit_dfs(&mut self, item: Node, parent_item: Option<Node>) -> anyhow::Result<()> {
+        fn visit_dfs(&mut self, item: T, parent_item: Option<T>) -> anyhow::Result<()> {
             // Reference cycles are forbidden, so exit early if one is found.
             if self.parents.contains(&item) {
-                return Err(anyhow!(
-                    "detected cycle in closure reference graph: {} -> {}",
-                    item.0,
-                    parent_item.unwrap().0
-                ));
+                return Err((self.cycle_error)(item, parent_item.unwrap()));
             }
 
             // Return early if we have already visited this node before.
@@ -214,9 +183,10 @@ where
             }
 
             // Decide whether to continue the DFS or abandon it in favor of the next item.
-            let children = match (self.get_children)(item)? {
-                Include::Yes(children) => children,
-                Include::No => return Ok(()),
+            let children = if (self.filter)(item)? {
+                (self.get_children)(item)?
+            } else {
+                return Ok(());
             };
 
             // Mark this node as a parent, to detect cycles.
@@ -235,5 +205,5 @@ where
         }
     }
 
-    ClosureBuilder::new(&items, get_children).compute()
+    DfsSorter::new(&initial_items, get_children, filter, cycle_error).compute()
 }

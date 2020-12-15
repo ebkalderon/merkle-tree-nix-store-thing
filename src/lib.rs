@@ -1,6 +1,6 @@
 //! Prototype content-addressable Nix-like store backed by a Merkle tree.
 
-pub use self::closure::{Closure, Delta};
+pub use self::closure::Closure;
 pub use self::object::*;
 
 use std::collections::BTreeSet;
@@ -78,7 +78,7 @@ impl<B: Backend> Store<B> {
     /// reference graph, or an I/O error occurred.
     #[inline]
     pub fn compute_closure(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
-        closure::compute(self, pkgs)
+        closure::compute(&self.objects, pkgs, |_id, _kind| Ok(true))
     }
 
     /// Computes a delta closure which only contains objects that are missing on the remote store.
@@ -90,21 +90,34 @@ impl<B: Backend> Store<B> {
     where
         R: Remote + ?Sized,
     {
-        closure::find_delta(self, dst, pkgs)
+        // This delta computation technique was shamelessly stolen from Git, as documented
+        // meticulously in these two pages:
+        //
+        // https://matthew-brett.github.io/curious-git/git_push_algorithm.html
+        // https://github.com/git/git/blob/master/Documentation/technical/pack-protocol.txt
+
+        let mut num_present = 0;
+        let missing = closure::compute(&self.objects, pkgs, |id, kind| {
+            let exists = dst.contains_object(&id, Some(kind))?;
+            if exists {
+                num_present += 1;
+            }
+            Ok(!exists)
+        })?;
+
+        Ok(Delta {
+            num_present,
+            missing,
+        })
     }
 
     /// Iterates over the closure and lazily yields each element in reverse topological order.
     ///
     /// This ordering is important because it ensures objects and packages can be inserted into
     /// stores in a consistent order, where all references are inserted before their referrers.
-    pub fn yield_closure(&self, mut closure: Closure) -> ClosureStream<'_> {
-        Box::new(std::iter::from_fn(move || {
-            if let Some((id, kind)) = closure.next() {
-                Some(self.objects.get_object(id, Some(kind)))
-            } else {
-                None
-            }
-        }))
+    pub fn yield_closure(&self, closure: Closure) -> ClosureStream<'_> {
+        let rev_topo = closure.into_iter().rev();
+        Box::new(rev_topo.map(move |(id, kind)| self.objects.get_object(id, Some(kind))))
     }
 
     /// Copies `pkgs` and their dependencies to the remote source `dest`. This will resolve the
@@ -138,4 +151,13 @@ impl<B: Backend> Remote for Store<B> {
 
         Ok(())
     }
+}
+
+/// A partial closure describing the delta between a local and remote package store.
+#[derive(Debug)]
+pub struct Delta {
+    /// Number of objects already present on the remote.
+    pub num_present: usize,
+    /// Closure of objects known to be missing on the remote.
+    pub missing: Closure,
 }
