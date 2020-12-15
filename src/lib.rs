@@ -1,17 +1,16 @@
 //! Prototype content-addressable Nix-like store backed by a Merkle tree.
 
 pub use self::closure::Closure;
+pub use self::copy::*;
 pub use self::object::*;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::local::{Backend, Filesystem, Objects, Packages};
-use crate::remote::{ClosureStream, Remote};
-
-pub mod remote;
 
 mod closure;
+mod copy;
 mod install;
 mod local;
 mod object;
@@ -80,15 +79,14 @@ impl<B: Backend> Store<B> {
     pub fn compute_closure(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
         closure::compute(&self.objects, pkgs, |_id, _kind| Ok(true))
     }
+}
 
-    /// Computes a delta closure which only contains objects that are missing on the remote store.
-    ///
-    /// Returns `Err` if any of the given object IDs do not exist in this store, any of the object
-    /// IDs do not refer to a `Package` object, a cycle or structural inconsistency is detected in
-    /// the reference graph, or an I/O error occurred.
-    pub fn compute_delta<R>(&self, pkgs: BTreeSet<ObjectId>, dst: &R) -> anyhow::Result<Delta>
+impl<'s, B: Backend> Source<'s> for Store<B> {
+    type Objects = Box<dyn Iterator<Item = anyhow::Result<Object>> + 's>;
+
+    fn find_missing<D>(&self, dst: &D, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Delta>
     where
-        R: Remote + ?Sized,
+        D: Destination + ?Sized,
     {
         // This delta computation technique was shamelessly stolen from Git, as documented
         // meticulously in these two pages:
@@ -111,39 +109,25 @@ impl<B: Backend> Store<B> {
         })
     }
 
-    /// Iterates over the closure and lazily yields each element in reverse topological order.
-    ///
-    /// This ordering is important because it ensures objects and packages can be inserted into
-    /// stores in a consistent order, where all references are inserted before their referrers.
-    pub fn yield_closure(&self, closure: Closure) -> ClosureStream<'_> {
+    fn yield_objects(&'s self, closure: Closure) -> anyhow::Result<Self::Objects> {
         let rev_topo = closure.into_iter().rev();
-        Box::new(rev_topo.map(move |(id, kind)| self.objects.get_object(id, Some(kind))))
-    }
-
-    /// Copies `pkgs` and their dependencies to the remote source `dest`. This will resolve the
-    /// delta closure between the source and the destination and only synchronize objects that are
-    /// missing.
-    pub fn copy_closure<R>(&self, pkgs: BTreeSet<ObjectId>, dest: &mut R) -> anyhow::Result<()>
-    where
-        R: Remote + ?Sized,
-    {
-        let delta = self.compute_delta(pkgs, dest)?;
-        let objects = self.yield_closure(delta.missing);
-        dest.upload_objects(objects)?;
-        Ok(())
+        Ok(Box::new(rev_topo.map(move |(id, kind)| {
+            self.objects.get_object(id, Some(kind))
+        })))
     }
 }
 
-impl<B: Backend> Remote for Store<B> {
+impl<B: Backend> Destination for Store<B> {
+    type Progress = ();
+
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
         Ok(self.objects.contains_object(id, kind))
     }
 
-    fn download_objects(&self, closure: Closure) -> anyhow::Result<ClosureStream<'_>> {
-        Ok(self.yield_closure(closure))
-    }
-
-    fn upload_objects(&mut self, stream: ClosureStream) -> anyhow::Result<()> {
+    fn insert_objects<I>(&mut self, stream: I) -> anyhow::Result<Self::Progress>
+    where
+        I: Iterator<Item = anyhow::Result<Object>>,
+    {
         for result in stream {
             let obj = result?;
             self.insert_object(obj)?;
@@ -151,13 +135,4 @@ impl<B: Backend> Remote for Store<B> {
 
         Ok(())
     }
-}
-
-/// A partial closure describing the delta between a local and remote package store.
-#[derive(Debug)]
-pub struct Delta {
-    /// Number of objects already present on the remote.
-    pub num_present: usize,
-    /// Closure of objects known to be missing on the remote.
-    pub missing: Closure,
 }
