@@ -1,4 +1,4 @@
-//! Generic interfaces for copying objects between stores.
+//! Functions for copying packages between stores.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -60,7 +60,7 @@ pub trait Source<'s> {
 /// A destination repository to copy to.
 pub trait Destination {
     /// Stream of progress updates.
-    type Progress: Iterator<Item = anyhow::Result<CopyProgress>>;
+    type Progress: Iterator<Item = anyhow::Result<Progress>>;
 
     /// Returns `Ok(true)` if the repository contains a tree object with the given unique ID, or
     /// `Ok(false)` otherwise.
@@ -120,7 +120,7 @@ impl<D: Destination + ?Sized> CopyInfo<D> {
 
 /// A progress update for an ongoing copy operation.
 #[derive(Debug)]
-pub struct CopyProgress {
+pub struct Progress {
     /// The object ID being copied.
     pub id: ObjectId,
     /// Number of bytes copied so far.

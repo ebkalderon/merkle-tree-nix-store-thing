@@ -1,16 +1,18 @@
 //! Prototype content-addressable Nix-like store backed by a Merkle tree.
 
 pub use self::closure::Closure;
-pub use self::copy::*;
+pub use self::copy::copy_closure;
 pub use self::object::*;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use crate::copy::{Delta, Destination, Progress as CopyProgress, Source};
 use crate::local::{Backend, Filesystem, Objects, Packages};
 
+pub mod copy;
+
 mod closure;
-mod copy;
 mod install;
 mod local;
 mod object;
