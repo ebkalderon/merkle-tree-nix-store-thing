@@ -27,6 +27,11 @@ impl Closure {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+
+    /// Iterates over each element in the closure.
+    pub fn iter(&self) -> impl Iterator<Item = &(ObjectId, ObjectKind)> + '_ {
+        self.0.iter()
+    }
 }
 
 impl IntoIterator for Closure {

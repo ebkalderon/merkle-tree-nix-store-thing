@@ -1,6 +1,6 @@
 //! Generic interfaces for copying objects between stores.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Closure, Object, ObjectId, ObjectKind};
 
@@ -16,14 +16,21 @@ pub fn copy_closure<'s, S, D>(
     src: &'s S,
     dst: &mut D,
     pkgs: BTreeSet<ObjectId>,
-) -> anyhow::Result<D::Progress>
+) -> anyhow::Result<CopyInfo<D>>
 where
     S: Source<'s> + ?Sized,
     D: Destination + ?Sized,
 {
     let delta = src.find_missing(dst, pkgs)?;
+    let total_objects = delta.missing.len() + delta.num_present;
+    let missing = delta.missing.iter().map(|&(id, _)| (id, 0)).collect();
     let objects = src.yield_objects(delta.missing)?;
-    dst.insert_objects(objects)
+    Ok(CopyInfo {
+        total_objects,
+        total_bytes: 0, // TODO: Need to implement.
+        missing,
+        progress: dst.insert_objects(objects)?,
+    })
 }
 
 /// A source repository to copy from.
@@ -53,7 +60,7 @@ pub trait Source<'s> {
 /// A destination repository to copy to.
 pub trait Destination {
     /// Stream of progress updates.
-    type Progress; // TODO: Define actual invariants.
+    type Progress: Iterator<Item = anyhow::Result<CopyProgress>>;
 
     /// Returns `Ok(true)` if the repository contains a tree object with the given unique ID, or
     /// `Ok(false)` otherwise.
@@ -80,4 +87,42 @@ pub struct Delta {
     pub num_present: usize,
     /// Closure of objects known to be missing on the destination.
     pub missing: Closure,
+}
+
+/// Represents an ongoing copy operation.
+///
+/// This struct is created by [`copy_closure()`]. See its documentation for more.
+#[derive(Debug)]
+pub struct CopyInfo<D: Destination + ?Sized> {
+    /// Total number of objects in the closure.
+    pub total_objects: usize,
+    /// Total size of the closure, in bytes.
+    pub total_bytes: u64,
+    /// Objects that are missing at the destination.
+    pub missing: BTreeMap<ObjectId, u64>,
+    /// Stream of progress updates.
+    pub progress: D::Progress,
+}
+
+impl<D: Destination + ?Sized> CopyInfo<D> {
+    /// Returns the number of objects being copied to the destination.
+    #[inline]
+    pub fn objects_to_copy(&self) -> usize {
+        self.missing.len()
+    }
+
+    /// Returns the number of bytes being copied to the destination.
+    #[inline]
+    pub fn bytes_to_copy(&self) -> u64 {
+        self.missing.values().sum()
+    }
+}
+
+/// A progress update for an ongoing copy operation.
+#[derive(Debug)]
+pub struct CopyProgress {
+    /// The object ID being copied.
+    pub id: ObjectId,
+    /// Number of bytes copied so far.
+    pub bytes_copied: u64,
 }

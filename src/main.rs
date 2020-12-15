@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use foo::{Blob, Entry, Object, Package, Platform, Source, Store, Tree};
+use foo::{Blob, Entry, Object, Package, Platform, Store, Tree};
 
 fn main() -> anyhow::Result<()> {
     // let mut store = Store::in_memory();
@@ -72,13 +72,10 @@ fn main() -> anyhow::Result<()> {
     );
 
     let mut store2: Store = Store::init("./store2")?;
-    println!(
-        "delta closure between store and store2: {:?}",
-        store.find_missing(&store2, pkgs.clone())?
-    );
 
     println!("copying delta from store -> store2");
-    foo::copy_closure(&store, &mut store2, pkgs)?;
+    let info = foo::copy_closure(&store, &mut store2, pkgs)?;
+    println!("{:?}", info);
 
     Ok(())
 }

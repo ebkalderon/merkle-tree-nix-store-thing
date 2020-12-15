@@ -118,7 +118,7 @@ impl<'s, B: Backend> Source<'s> for Store<B> {
 }
 
 impl<B: Backend> Destination for Store<B> {
-    type Progress = ();
+    type Progress = std::iter::Empty<anyhow::Result<CopyProgress>>;
 
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
         Ok(self.objects.contains_object(id, kind))
@@ -133,6 +133,6 @@ impl<B: Backend> Destination for Store<B> {
             self.insert_object(obj)?;
         }
 
-        Ok(())
+        Ok(std::iter::empty())
     }
 }
