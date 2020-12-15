@@ -2,7 +2,7 @@
 
 pub use self::id::ObjectId;
 pub use self::name::{InstallName, PackageName};
-pub use self::platform::{Arch, Env, Os, Platform};
+pub use self::platform::Platform;
 pub use self::reference::{Offsets, References};
 
 pub(crate) use self::reference::RewriteSink;
@@ -26,10 +26,10 @@ use self::spooled::SpooledTempFile;
 use crate::util;
 
 pub mod pack;
+pub mod platform;
 
 mod id;
 mod name;
-mod platform;
 mod reference;
 mod spooled;
 

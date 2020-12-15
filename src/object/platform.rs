@@ -35,7 +35,7 @@ compile_error!("unsupported operating system");
 #[macro_export]
 macro_rules! platform {
     ($arch:ident - $($os:ident)-+) => {
-        $crate::Platform {
+        $crate::platform::Platform {
             arch: $crate::platform_inner!(@arch $arch),
             os: $crate::platform_inner!(@os $($os)-+),
         }
@@ -46,19 +46,19 @@ macro_rules! platform {
 #[macro_export]
 macro_rules! platform_inner {
     (@arch i686) => {
-        $crate::Arch::I686
+        $crate::platform::Arch::I686
     };
     (@arch x86_64) => {
-        $crate::Arch::X86_64
+        $crate::platform::Arch::X86_64
     };
     (@os darwin) => {
-        $crate::Os::Darwin
+        $crate::platform::Os::Darwin
     };
     (@os linux-gnu) => {
-        $crate::Os::Linux($crate::Env::Gnu)
+        $crate::platform::Os::Linux($crate::platform::Env::Gnu)
     };
     (@os linux-musl) => {
-        $crate::Os::Linux($crate::Env::Musl)
+        $crate::platform::Os::Linux($crate::platform::Env::Musl)
     };
 }
 
