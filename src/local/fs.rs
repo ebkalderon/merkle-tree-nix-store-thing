@@ -7,7 +7,7 @@ use filetime::FileTime;
 
 use super::{Backend, Objects, Packages};
 use crate::{
-    install, Blob, ContentAddressable, Entry, InstallName, Metadata, Object, ObjectId, ObjectKind,
+    install, Blob, ContentAddressable, Entry, InstallName, Object, ObjectExt, ObjectId, ObjectKind,
     Package, Tree,
 };
 

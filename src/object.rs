@@ -448,7 +448,7 @@ impl Tree {
     }
 }
 
-impl Metadata for Tree {
+impl ObjectExt for Tree {
     fn hasher() -> id::Hasher {
         id::Hasher::new_tree()
     }
@@ -489,7 +489,7 @@ impl Package {
     }
 }
 
-impl Metadata for Package {
+impl ObjectExt for Package {
     fn hasher() -> id::Hasher {
         id::Hasher::new_package()
     }
@@ -528,7 +528,7 @@ pub struct Spec {
     pub builder: String,
 }
 
-impl Metadata for Spec {
+impl ObjectExt for Spec {
     fn hasher() -> id::Hasher {
         id::Hasher::new_spec()
     }
@@ -544,8 +544,8 @@ impl ContentAddressable for Spec {
     }
 }
 
-/// Describes Merkle tree objects that contain only metadata.
-pub(crate) trait Metadata: Serialize + Hash + Sized {
+/// An extension trait for JSON-like Merkle tree objects.
+pub(crate) trait ObjectExt: Serialize + Hash + Sized {
     /// Hasher to use when computing the object ID.
     fn hasher() -> id::Hasher;
 
