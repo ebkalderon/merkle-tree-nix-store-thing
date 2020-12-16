@@ -7,7 +7,7 @@ use anyhow::anyhow;
 
 use crate::{ObjectId, ObjectKind, Objects};
 
-type Node = (ObjectId, ObjectKind);
+type Node = (ObjectId, ObjectKind, u64);
 
 /// A filesystem closure for one or more packages.
 ///
@@ -17,6 +17,7 @@ type Node = (ObjectId, ObjectKind);
 #[derive(Clone)]
 pub struct Closure {
     nodes: BTreeMap<Node, BTreeSet<Node>>,
+    unpacked_size: u64,
 }
 
 impl Closure {
@@ -24,6 +25,12 @@ impl Closure {
     #[inline]
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Returns the estimated unpacked size of the objects in the closure, in bytes.
+    #[inline]
+    pub fn unpacked_size(&self) -> u64 {
+        self.unpacked_size
     }
 
     /// Iterates over each element in the closure.
@@ -71,11 +78,11 @@ impl Closure {
         let mut content = Vec::new();
         let mut specs = Vec::new();
 
-        for (id, kind) in self.sort_topological() {
+        for (id, kind, size) in self.sort_topological() {
             match kind {
-                ObjectKind::Package => pkgs.push((id, kind)),
-                ObjectKind::Spec => specs.push((id, kind)),
-                _ => content.push((id, kind)),
+                ObjectKind::Package => pkgs.push((id, kind, size)),
+                ObjectKind::Spec => specs.push((id, kind, size)),
+                _ => content.push((id, kind, size)),
             }
         }
 
@@ -119,13 +126,13 @@ impl<'a> Display for DotDiagram<'a> {
                 continue;
             }
 
-            let (id, kind) = node;
+            let (id, kind, _) = node;
             match kind {
                 ObjectKind::Blob | ObjectKind::Tree if !self.show_content => continue,
                 _ => writeln!(f, r#"  "{}" [shape = box]"#, id)?,
             }
 
-            for (child_id, kind) in children {
+            for (child_id, kind, _) in children {
                 match kind {
                     ObjectKind::Blob | ObjectKind::Tree if !self.show_content => continue,
                     _ if child_id != id => writeln!(f, r#"  "{}" -> "{}""#, child_id, id)?,
@@ -177,14 +184,16 @@ where
         }
 
         // Decide whether to continue the DFS or abandon it in favor of the next item.
-        let (id, kind) = item;
+        let (id, kind, _) = item;
         let children: Vec<_> = if (state.filter)(id, kind)? {
             nodes.entry(item).or_default();
             match kind {
                 ObjectKind::Blob => Vec::new(),
                 ObjectKind::Tree => {
                     let tree = state.obj.get_tree(id)?;
-                    tree.references().collect()
+                    tree.references()
+                        .map(|(id, k)| state.obj.object_size(&id, Some(k)).map(|n| (id, k, n)))
+                        .collect::<Result<_, _>>()?
                 }
                 ObjectKind::Package => {
                     let pkg = state.obj.get_package(id)?;
@@ -192,7 +201,8 @@ where
                         .into_iter()
                         .map(|id| (id, kind))
                         .chain(std::iter::once((pkg.tree, ObjectKind::Tree)))
-                        .collect()
+                        .map(|(id, k)| state.obj.object_size(&id, Some(k)).map(|n| (id, k, n)))
+                        .collect::<Result<_, _>>()?
                 }
                 ObjectKind::Spec => {
                     let spec = state.obj.get_spec(id)?;
@@ -200,7 +210,8 @@ where
                         .into_iter()
                         .chain(spec.build_dependencies)
                         .map(|id| (id, kind))
-                        .collect()
+                        .map(|(id, k)| state.obj.object_size(&id, Some(k)).map(|n| (id, k, n)))
+                        .collect::<Result<_, _>>()?
                 }
             }
         } else {
@@ -234,9 +245,15 @@ where
         parents: HashSet::new(),
     };
 
-    for root in roots.iter().map(|&id| (id, ObjectKind::Package)) {
-        visit(&mut state, &mut nodes, root, None)?;
+    for root in roots {
+        let kind = ObjectKind::Package;
+        let size = obj.object_size(&root, Some(kind))?;
+        let node = (root, kind, size);
+        visit(&mut state, &mut nodes, node, None)?;
     }
 
-    Ok(Closure { nodes })
+    Ok(Closure {
+        unpacked_size: nodes.keys().map(|item| item.2).sum(),
+        nodes,
+    })
 }

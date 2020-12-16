@@ -22,12 +22,11 @@ where
     D: Destination + ?Sized,
 {
     let delta = src.find_missing(dst, pkgs)?;
-    let total_objects = delta.missing.len() + delta.num_present;
-    let missing = delta.missing.iter().map(|&(id, _)| (id, 0)).collect();
+    let num_present = delta.num_present;
+    let missing = delta.missing.iter().map(|&item| (item.0, item.2)).collect();
     let objects = src.yield_objects(delta.missing)?;
     Ok(CopyInfo {
-        total_objects,
-        total_bytes: 0, // TODO: Need to implement.
+        num_present,
         missing,
         progress: dst.insert_objects(objects)?,
     })
@@ -94,10 +93,8 @@ pub struct Delta {
 /// This struct is created by [`copy_closure()`]. See its documentation for more.
 #[derive(Debug)]
 pub struct CopyInfo<D: Destination + ?Sized> {
-    /// Total number of objects in the closure.
-    pub total_objects: usize,
-    /// Total size of the closure, in bytes.
-    pub total_bytes: u64,
+    /// Number of objects already present on the destination.
+    pub num_present: usize,
     /// Objects that are missing at the destination.
     pub missing: BTreeMap<ObjectId, u64>,
     /// Stream of progress updates.
