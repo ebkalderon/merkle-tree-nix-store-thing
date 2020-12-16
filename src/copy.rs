@@ -102,15 +102,9 @@ pub struct CopyInfo<D: Destination + ?Sized> {
 }
 
 impl<D: Destination + ?Sized> CopyInfo<D> {
-    /// Returns the number of objects being copied to the destination.
+    /// Returns the unpacked size of the objects being copied to the destination.
     #[inline]
-    pub fn objects_to_copy(&self) -> usize {
-        self.missing.len()
-    }
-
-    /// Returns the number of bytes being copied to the destination.
-    #[inline]
-    pub fn bytes_to_copy(&self) -> u64 {
+    pub fn unpacked_size(&self) -> u64 {
         self.missing.values().sum()
     }
 }
