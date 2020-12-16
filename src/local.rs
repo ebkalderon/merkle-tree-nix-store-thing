@@ -70,6 +70,15 @@ pub trait Objects {
     /// store will attempt to guess the desired object type, if it is not immediately known.
     fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> bool;
 
+    /// Returns the on-disk size of the object in bytes, if it exists in the store.
+    ///
+    /// If the type of the requested object is known up-front, implementers _can_ use this detail
+    /// to locate and retrieve the object faster. Otherwise, callers can specify `None` and the
+    /// store will attempt to guess the desired object type, if it is not immediately known.
+    ///
+    /// Returns `Err` if the object does not exist or an I/O error occurred.
+    fn object_size(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<u64>;
+
     /// Looks up a `Blob` object with the given ID and retrieves it, if it exists.
     ///
     /// Returns `Err` if the object does not exist, the given ID does not refer to a `Blob` object,

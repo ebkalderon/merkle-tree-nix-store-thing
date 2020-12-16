@@ -175,6 +175,23 @@ impl Objects for FsObjects {
             })
         }
     }
+
+    fn object_size(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<u64> {
+        let mut path = self.0.join(id.to_path_buf());
+
+        // Use `kind`, if specified, as a perf optimization to guess the file extension.
+        if let Some(k) = kind {
+            path.set_extension(k.as_str());
+        } else {
+            ObjectKind::iter().any(|k| {
+                path.set_extension(k.as_str());
+                path.exists()
+            });
+        };
+
+        let metadata = std::fs::metadata(path)?;
+        Ok(metadata.len())
+    }
 }
 
 /// A filesystem-backed `packages` directory.
