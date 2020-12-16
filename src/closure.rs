@@ -1,6 +1,7 @@
 //! Types and helper functions for computing closures.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::fmt::{self, Display, Formatter};
 
 use anyhow::anyhow;
 
@@ -79,6 +80,55 @@ impl Closure {
         }
 
         specs.into_iter().chain(content).chain(pkgs).collect()
+    }
+
+    /// Returns an object that implements [`Display`](std::fmt::Display) which renders the closure
+    /// as a Graphviz DOT diagram.
+    ///
+    /// If `show_content` is `true`, then content objects like [`Blob`](crate::Blob) and
+    /// [`Tree`](crate::Tree) will be included in the diagram as well. Otherwise, they are omitted
+    /// from the diagram for the sake of reducing noise.
+    #[inline]
+    pub fn render_dot(&self, show_content: bool) -> DotDiagram<'_> {
+        DotDiagram {
+            inner: self,
+            show_content,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DotDiagram<'a> {
+    inner: &'a Closure,
+    show_content: bool,
+}
+
+impl<'a> Display for DotDiagram<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        writeln!(f, "digraph G {{")?;
+
+        let mut done = HashSet::new();
+        for (node, children) in &self.inner.nodes {
+            if !done.insert(node) {
+                continue;
+            }
+
+            let (id, kind) = node;
+            match kind {
+                ObjectKind::Blob | ObjectKind::Tree if !self.show_content => continue,
+                _ => writeln!(f, r#"  "{}" [shape = box]"#, id)?,
+            }
+
+            for (child_id, kind) in children {
+                match kind {
+                    ObjectKind::Blob | ObjectKind::Tree if !self.show_content => continue,
+                    _ if child_id != id => writeln!(f, r#"  "{}" -> "{}""#, child_id, id)?,
+                    _ => {}
+                }
+            }
+        }
+
+        write!(f, "}}")
     }
 }
 
