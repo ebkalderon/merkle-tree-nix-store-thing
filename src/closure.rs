@@ -1,7 +1,7 @@
 //! Types and helper functions for computing closures.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Debug, Display, Formatter};
 
 use anyhow::anyhow;
 
@@ -14,7 +14,7 @@ type Node = (ObjectId, ObjectKind);
 /// Closures describe the complete reference graph for a package or set of packages. References
 /// might include individual files (blobs), directory trees, and other packages that the root
 /// requires at run-time or at build-time.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Closure {
     nodes: BTreeMap<Node, BTreeSet<Node>>,
 }
@@ -94,6 +94,12 @@ impl Closure {
             inner: self,
             show_content,
         }
+    }
+}
+
+impl Debug for Closure {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.nodes.keys().fmt(f)
     }
 }
 
