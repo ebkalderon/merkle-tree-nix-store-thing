@@ -112,10 +112,9 @@ impl<'s, B: Backend> Source<'s> for Store<B> {
     }
 
     fn yield_objects(&'s self, closure: Closure) -> anyhow::Result<Self::Objects> {
-        let rev_topo = closure.into_iter().rev();
-        Ok(Box::new(rev_topo.map(move |(id, kind)| {
-            self.objects.get_object(id, Some(kind))
-        })))
+        Ok(Box::new(closure.sort_yield().into_iter().map(
+            move |(id, kind)| self.objects.get_object(id, Some(kind)),
+        )))
     }
 }
 
