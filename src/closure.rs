@@ -23,7 +23,7 @@ pub struct Closure {
 impl Closure {
     /// Returns the number of elements in the closure.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn num_objects(&self) -> usize {
         self.nodes.len()
     }
 
