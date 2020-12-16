@@ -27,7 +27,7 @@ impl Closure {
     }
 
     /// Iterates over each element in the closure.
-    pub fn iter(&self) -> impl Iterator<Item = &Node> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = &Node> {
         self.nodes.keys()
     }
 
