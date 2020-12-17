@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context};
 
-use super::{Backend, Packages, Store};
+use super::{Backend, LocalStore, Packages};
 use crate::object::RewriteSink;
 use crate::{
     util, Blob, Entry, Object, ObjectId, Offsets, Package, Platform, References, Spec, Tree,
@@ -15,7 +15,7 @@ use crate::{
 
 const PATCHELF_BIN: &str = "patchelf";
 
-impl<B: Backend> Store<B> {
+impl<B: Backend> LocalStore<B> {
     /// Converts an external directory into a [`Package`] object and installs it in the store.
     ///
     /// Blobs found to contain references to their own install directory ("self-references") are
@@ -89,7 +89,7 @@ where
 /// Returns the ID of the installed tree object, the detected run-time references, and a set of
 /// blob objects that contain self-references.
 fn build_tree<B>(
-    store: &mut Store<B>,
+    store: &mut LocalStore<B>,
     tree_dir: &Path,
     out_dir: &Path,
     spec: &Spec,

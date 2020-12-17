@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use foo::{Blob, Entry, Object, Package, Platform, Store, Tree};
+use foo::{Blob, Entry, LocalStore, Object, Package, Platform, Tree};
 
 fn main() -> anyhow::Result<()> {
     // let mut store = Store::in_memory();
-    let mut store: Store = Store::init("./store")?;
+    let mut store: LocalStore = LocalStore::init("./store")?;
 
     let txt_id = store.insert_object(Object::Blob(
         Blob::from_bytes(b"foobarbaz".to_vec(), false).0,
@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
         store.compute_closure(pkgs.clone())?
     );
 
-    let mut store2: Store = Store::init("./store2")?;
+    let mut store2: LocalStore = LocalStore::init("./store2")?;
 
     println!("copying delta from store -> store2");
     let info = foo::copy_closure(&store, &mut store2, pkgs)?;

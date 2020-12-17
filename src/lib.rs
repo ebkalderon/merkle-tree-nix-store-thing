@@ -2,7 +2,7 @@
 
 pub use self::closure::Closure;
 pub use self::copy::copy_closure;
-pub use self::local::{Backend, Store};
+pub use self::local::{Backend, LocalStore};
 pub use self::object::*;
 
 use std::collections::BTreeSet;
@@ -15,6 +15,11 @@ mod closure;
 mod local;
 mod object;
 mod util;
+
+/// A build server and content-addressable store of packages.
+pub trait Store: Objects {
+    fn build_spec(&self, spec: ObjectId) -> anyhow::Result<()>; // TODO: Determine return value.
+}
 
 /// A content-addressable repository of Merkle tree objects.
 pub trait Objects {

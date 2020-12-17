@@ -15,18 +15,18 @@ mod install;
 
 /// A content-addressable store of installed software packages.
 #[derive(Debug)]
-pub struct Store<B: Backend = Filesystem> {
+pub struct LocalStore<B: Backend = Filesystem> {
     objects: B::Objects,
     packages: B::Packages,
 }
 
-impl<B: Backend> Store<B> {
+impl<B: Backend> LocalStore<B> {
     /// Opens the store on the directory located in `path`.
     ///
     /// Returns `Err` if the path does not exist or is not a valid store directory.
     pub fn open<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let (objects, packages) = B::open(path.into())?;
-        Ok(Store { objects, packages })
+        Ok(LocalStore { objects, packages })
     }
 
     /// Initializes a new store directory at `path` and opens it.
@@ -39,7 +39,7 @@ impl<B: Backend> Store<B> {
     /// store directory could not be created at `path` due to permissions or other I/O errors.
     pub fn init<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let (objects, packages) = B::init(path.into())?;
-        Ok(Store { objects, packages })
+        Ok(LocalStore { objects, packages })
     }
 
     /// Initializes a store inside the empty directory referred to by `path` and opens it.
@@ -51,7 +51,7 @@ impl<B: Backend> Store<B> {
     /// or I/O errors.
     pub fn init_bare<P: Into<PathBuf>>(path: P) -> anyhow::Result<Self> {
         let (objects, packages) = B::init_bare(path.into())?;
-        Ok(Store { objects, packages })
+        Ok(LocalStore { objects, packages })
     }
 
     /// Inserts a tree object into the store, returning its unique ID.
@@ -66,7 +66,7 @@ impl<B: Backend> Store<B> {
     }
 }
 
-impl<B: Backend> Store<B> {
+impl<B: Backend> LocalStore<B> {
     /// Computes the filesystem closure for the given packages.
     ///
     /// Returns `Err` if any of the given object IDs do not exist, any of the object IDs do not
@@ -78,7 +78,7 @@ impl<B: Backend> Store<B> {
     }
 }
 
-impl<'s, B: Backend> Source<'s> for Store<B> {
+impl<'s, B: Backend> Source<'s> for LocalStore<B> {
     type Objects = Box<dyn Iterator<Item = anyhow::Result<Object>> + 's>;
 
     fn find_missing<D>(&self, dst: &D, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Delta>
@@ -113,7 +113,7 @@ impl<'s, B: Backend> Source<'s> for Store<B> {
     }
 }
 
-impl<B: Backend> Destination for Store<B> {
+impl<B: Backend> Destination for LocalStore<B> {
     type Progress = std::iter::Empty<anyhow::Result<CopyProgress>>;
 
     fn contains(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
