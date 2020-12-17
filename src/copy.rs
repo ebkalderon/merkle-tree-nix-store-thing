@@ -69,7 +69,7 @@ pub trait Destination {
     /// repository will attempt to guess the desired object type, if it is not immediately known.
     ///
     /// Returns `Err` if an I/O error occurred.
-    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool>;
+    fn contains(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool>;
 
     /// Copies the stream of objects to the repository, returning a stream of progress updates.
     ///

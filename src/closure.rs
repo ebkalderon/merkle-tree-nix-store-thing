@@ -159,18 +159,18 @@ impl<'a> Display for DotDiagram<'a> {
 /// _delta_ closures, which contain only objects that are missing some remote host.
 pub fn compute<O, F>(obj: &O, roots: BTreeSet<ObjectId>, mut filter: F) -> anyhow::Result<Closure>
 where
-    O: Objects,
+    O: Objects + ?Sized,
     F: FnMut(ObjectId, ObjectKind) -> anyhow::Result<bool>,
 {
-    struct State<'a> {
-        obj: &'a dyn Objects,
+    struct State<'a, O: ?Sized> {
+        obj: &'a O,
         filter: &'a mut dyn FnMut(ObjectId, ObjectKind) -> anyhow::Result<bool>,
         visited: HashSet<Node>,
         parents: HashSet<Node>,
     }
 
     fn visit(
-        state: &mut State,
+        state: &mut State<impl Objects + ?Sized>,
         nodes: &mut BTreeMap<Node, BTreeSet<Node>>,
         item: Node,
         parent_item: Option<Node>,

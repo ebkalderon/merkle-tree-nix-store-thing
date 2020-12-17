@@ -5,6 +5,8 @@ pub use self::copy::copy_closure;
 pub use self::local::{Backend, Store};
 pub use self::object::*;
 
+use std::collections::BTreeSet;
+
 use anyhow::anyhow;
 
 pub mod copy;
@@ -94,5 +96,14 @@ pub trait Objects {
             o.into_spec()
                 .map_err(|_| anyhow!("{} is not a spec object", id))
         })
+    }
+
+    /// Computes the filesystem closure for the given packages.
+    ///
+    /// Returns `Err` if any of the given object IDs do not exist, any of the object IDs do not
+    /// refer to a `Package` object, a cycle or structural inconsistency is detected in the
+    /// reference graph, or an I/O error occurred.
+    fn compute_closure(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
+        closure::compute(self, pkgs, |_id, _kind| Ok(true))
     }
 }

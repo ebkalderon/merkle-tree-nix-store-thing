@@ -93,7 +93,7 @@ impl<'s, B: Backend> Source<'s> for Store<B> {
 
         let mut num_present = 0;
         let missing = closure::compute(&self.objects, pkgs, |id, kind| {
-            let exists = dst.contains_object(&id, Some(kind))?;
+            let exists = dst.contains(&id, Some(kind))?;
             if exists {
                 num_present += 1;
             }
@@ -116,7 +116,7 @@ impl<'s, B: Backend> Source<'s> for Store<B> {
 impl<B: Backend> Destination for Store<B> {
     type Progress = std::iter::Empty<anyhow::Result<CopyProgress>>;
 
-    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
+    fn contains(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
         Ok(self.objects.contains_object(id, kind))
     }
 
