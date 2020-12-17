@@ -145,12 +145,18 @@ impl<'a> Display for DotDiagram<'a> {
     }
 }
 
-/// Compute the filesystem closure for the given package set.
+/// Computes the filesystem closure for the given package set.
 ///
 /// The `filter` closure is used to determine whether the given object should be included in the
 /// closure. Given an object, the closure must return `Ok(true)` or `Ok(false)`, with `Err` being
 /// reserved for I/O errors. The returned `Closure` will only contain objects for which the closure
 /// returns `Ok(true)`.
+///
+/// This function traverses the Merkle tree downward from the roots via depth-first search,
+/// optionally filtering out some nodes with the `filter` closure, returning a dependency graph.
+///
+/// This is useful both for computing _full_ closures (if `filter` always returns `Ok(true)`), or
+/// _delta_ closures, which contain only objects that are missing some remote host.
 pub fn compute<O, F>(obj: &O, roots: BTreeSet<ObjectId>, mut filter: F) -> anyhow::Result<Closure>
 where
     O: Objects,
