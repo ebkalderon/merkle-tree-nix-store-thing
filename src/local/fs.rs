@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context};
 use filetime::FileTime;
 
-use super::{Backend, Objects, Packages};
+use super::{install, Backend, Objects, Packages};
 use crate::{
-    install, Blob, ContentAddressable, Entry, InstallName, Object, ObjectExt, ObjectId, ObjectKind,
-    Package, Tree,
+    Blob, ContentAddressable, Entry, InstallName, Object, ObjectExt, ObjectId, ObjectKind, Package,
+    Tree,
 };
 
 const OBJECTS_SUBDIR: &str = "objects";

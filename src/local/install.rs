@@ -7,11 +7,10 @@ use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context};
 
-use crate::local::Packages;
+use super::{Backend, Packages, Store};
 use crate::object::RewriteSink;
 use crate::{
-    util, Backend, Blob, Entry, Object, ObjectId, Offsets, Package, Platform, References, Spec,
-    Store, Tree,
+    util, Blob, Entry, Object, ObjectId, Offsets, Package, Platform, References, Spec, Tree,
 };
 
 const PATCHELF_BIN: &str = "patchelf";

@@ -10,7 +10,6 @@ use anyhow::anyhow;
 pub mod copy;
 
 mod closure;
-mod install;
 mod local;
 mod object;
 mod util;

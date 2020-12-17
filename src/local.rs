@@ -11,12 +11,13 @@ use crate::copy::{Delta, Destination, Progress as CopyProgress, Source};
 use crate::{closure, Closure, InstallName, Object, ObjectId, ObjectKind, Objects, Package};
 
 mod fs;
+mod install;
 
 /// A content-addressable store of installed software packages.
 #[derive(Debug)]
 pub struct Store<B: Backend = Filesystem> {
     objects: B::Objects,
-    pub(crate) packages: B::Packages,
+    packages: B::Packages,
 }
 
 impl<B: Backend> Store<B> {
