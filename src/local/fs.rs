@@ -7,8 +7,7 @@ use filetime::FileTime;
 
 use super::{install, Backend, Objects, Packages};
 use crate::{
-    Blob, ContentAddressable, Entry, InstallName, Object, ObjectExt, ObjectId, ObjectKind, Package,
-    Tree,
+    Blob, ContentAddressable, Entry, Object, ObjectExt, ObjectId, ObjectKind, Package, Tree,
 };
 
 const OBJECTS_SUBDIR: &str = "objects";
@@ -227,10 +226,6 @@ impl Packages for FsPackages {
                 Err(e) => Err(e).context(format!("failed to persist {}", target_dir.display())),
             }
         }
-    }
-
-    fn contains(&self, name: &InstallName) -> bool {
-        self.0.join(name).exists()
     }
 }
 

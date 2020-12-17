@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::anyhow;
 
 use crate::copy::{Delta, Destination, Progress as CopyProgress, Source};
-use crate::{closure, Closure, InstallName, Object, ObjectId, ObjectKind, Objects, Package, Store};
+use crate::{closure, Closure, Object, ObjectId, ObjectKind, Objects, Package, Store};
 
 mod fs;
 mod install;
@@ -192,9 +192,6 @@ pub trait Packages {
     /// Returns `Err` if the package could not be instantiated or an I/O error occurred.
     fn instantiate(&mut self, pkg: &Package, objects: &Self::Objects) -> anyhow::Result<()>;
 
-    /// Returns `true` if the given package is installed.
-    fn contains(&self, pkg_name: &InstallName) -> bool;
-
     /// Installs a `Package` object in the repository.
     ///
     /// This method verifies that all references are present in the store before installing.
@@ -205,13 +202,7 @@ pub trait Packages {
             .references
             .iter()
             .copied()
-            .filter(|&id| {
-                objects
-                    .get_package(id)
-                    .ok()
-                    .filter(|pkg| self.contains(&pkg.install_name()))
-                    .is_none()
-            })
+            .filter(|&id| objects.get_package(id).ok().is_none())
             .collect();
 
         if !missing_refs.is_empty() {
