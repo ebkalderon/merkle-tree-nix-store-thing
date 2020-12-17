@@ -47,7 +47,7 @@ pub trait Objects {
     /// If the type of the requested object is known up-front, implementers _can_ use this detail
     /// to locate and retrieve the object faster. Otherwise, callers can specify `None` and the
     /// store will attempt to guess the desired object type, if it is not immediately known.
-    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> bool;
+    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool>;
 
     /// Returns the on-disk size of the object in bytes, if it exists in the store.
     ///

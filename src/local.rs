@@ -68,7 +68,7 @@ impl<B: Backend> Objects for LocalStore<B> {
         self.objects.get_object(id, kind)
     }
 
-    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> bool {
+    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
         self.objects.contains_object(id, kind)
     }
 
@@ -122,7 +122,7 @@ impl<B: Backend> Destination for LocalStore<B> {
     type Progress = std::iter::Empty<anyhow::Result<CopyProgress>>;
 
     fn contains(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
-        Ok(self.objects.contains_object(id, kind))
+        self.objects.contains_object(id, kind)
     }
 
     fn insert_objects<I>(&mut self, stream: I) -> anyhow::Result<Self::Progress>

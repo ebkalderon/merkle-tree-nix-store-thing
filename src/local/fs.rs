@@ -161,18 +161,18 @@ impl Objects for FsObjects {
         }
     }
 
-    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> bool {
+    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
         let mut path = self.0.join(id.to_path_buf());
 
         // Use `kind`, if specified, as a perf optimization to guess the file extension.
         if let Some(k) = kind {
             path.set_extension(k.as_str());
-            path.exists()
+            Ok(path.exists())
         } else {
-            ObjectKind::iter().any(|k| {
+            Ok(ObjectKind::iter().any(|k| {
                 path.set_extension(k.as_str());
                 path.exists()
-            })
+            }))
         }
     }
 
