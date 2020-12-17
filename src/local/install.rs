@@ -10,7 +10,8 @@ use anyhow::{anyhow, Context};
 use super::{Backend, LocalStore, Packages};
 use crate::object::RewriteSink;
 use crate::{
-    util, Blob, Entry, Object, ObjectId, Offsets, Package, Platform, References, Spec, Tree,
+    util, Blob, Entry, Object, ObjectId, Objects, Offsets, Package, Platform, References, Spec,
+    Tree,
 };
 
 const PATCHELF_BIN: &str = "patchelf";

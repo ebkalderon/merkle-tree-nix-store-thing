@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::anyhow;
 
 use crate::copy::{Delta, Destination, Progress as CopyProgress, Source};
-use crate::{closure, Closure, InstallName, Object, ObjectId, ObjectKind, Objects, Package};
+use crate::{closure, Closure, InstallName, Object, ObjectId, ObjectKind, Objects, Package, Store};
 
 mod fs;
 mod install;
@@ -53,28 +53,33 @@ impl<B: Backend> LocalStore<B> {
         let (objects, packages) = B::init_bare(path.into())?;
         Ok(LocalStore { objects, packages })
     }
+}
 
-    /// Inserts a tree object into the store, returning its unique ID.
-    ///
-    /// Returns `Err` if the object could not be inserted into the store or an I/O error occurred.
-    pub fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
+impl<B: Backend> Objects for LocalStore<B> {
+    fn insert_object(&mut self, o: Object) -> anyhow::Result<ObjectId> {
         if let Object::Package(ref pkg) = &o {
             self.packages.install(pkg, &self.objects)?;
         }
 
         self.objects.insert_object(o)
     }
+
+    fn get_object(&self, id: ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<Object> {
+        self.objects.get_object(id, kind)
+    }
+
+    fn contains_object(&self, id: &ObjectId, kind: Option<ObjectKind>) -> bool {
+        self.objects.contains_object(id, kind)
+    }
+
+    fn object_size(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<u64> {
+        self.objects.object_size(id, kind)
+    }
 }
 
-impl<B: Backend> LocalStore<B> {
-    /// Computes the filesystem closure for the given packages.
-    ///
-    /// Returns `Err` if any of the given object IDs do not exist, any of the object IDs do not
-    /// refer to a `Package` object, a cycle or structural inconsistency is detected in the
-    /// reference graph, or an I/O error occurred.
-    #[inline]
-    pub fn compute_closure(&self, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Closure> {
-        closure::compute(&self.objects, pkgs, |_id, _kind| Ok(true))
+impl<B: Backend> Store for LocalStore<B> {
+    fn build_spec(&self, _spec: ObjectId) -> anyhow::Result<()> {
+        unimplemented!()
     }
 }
 
