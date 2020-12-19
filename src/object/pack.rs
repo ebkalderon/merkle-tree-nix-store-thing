@@ -235,6 +235,7 @@ impl<R: Read> PackReaderInner<R> {
             size,
             stream: (&self).take(size),
             state: &self.state,
+            progress: None,
         }))
     }
 }
@@ -255,9 +256,22 @@ pub struct Entry<'a, R> {
     size: u64,
     stream: io::Take<&'a PackReaderInner<R>>,
     state: &'a Cell<State>,
+    progress: Option<Box<dyn FnMut(&ObjectId, u64) + 'a>>,
 }
 
 impl<'a, R: Read> Entry<'a, R> {
+    /// Specifies a callback function for monitoring read progress.
+    ///
+    /// The callback will receive the number of bytes read since the last progress increment. Note
+    /// that this callback is called inline with the underlying reader itself, so it should block
+    /// as little as possible to avoid negatively impacting performance.
+    ///
+    /// If a progress callback was already set, this method will replace it.
+    pub fn with_progress(mut self, callback: impl FnMut(&ObjectId, u64) + 'a) -> Self {
+        self.progress = Some(Box::new(callback));
+        self
+    }
+
     /// Returns the declared cryptographic hash of the contained object.
     #[inline]
     pub fn id(&self) -> ObjectId {
@@ -339,6 +353,11 @@ impl<'a, R: Read> Read for Entry<'a, R> {
         }
 
         let len = self.stream.read(buf)?;
+
+        if let Some(ref mut callback) = self.progress.as_mut() {
+            callback(&self.id, len as u64);
+        }
+
         if self.stream.limit() == 0 {
             self.state.set(State::Ready);
         }
