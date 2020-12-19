@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
 
-use crate::copy::{Delta, Destination, Progress as CopyProgress, Source};
+use crate::copy::{Delta, Destination, Source};
 use crate::{closure, Closure, Object, ObjectId, ObjectKind, Objects, Package, Store};
 
 mod fs;
@@ -119,13 +119,11 @@ impl<'s, B: Backend> Source<'s> for LocalStore<B> {
 }
 
 impl<B: Backend> Destination for LocalStore<B> {
-    type Progress = std::iter::Empty<anyhow::Result<CopyProgress>>;
-
     fn contains(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
         self.objects.contains_object(id, kind)
     }
 
-    fn insert_objects<I>(&mut self, stream: I) -> anyhow::Result<Self::Progress>
+    fn insert_objects<I>(&mut self, stream: I) -> anyhow::Result<()>
     where
         I: Iterator<Item = anyhow::Result<Object>>,
     {
@@ -134,7 +132,7 @@ impl<B: Backend> Destination for LocalStore<B> {
             self.insert_object(obj)?;
         }
 
-        Ok(std::iter::empty())
+        Ok(())
     }
 }
 

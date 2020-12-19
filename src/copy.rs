@@ -16,7 +16,7 @@ pub fn copy_closure<'s, S, D>(
     src: &'s S,
     dst: &mut D,
     pkgs: BTreeSet<ObjectId>,
-) -> anyhow::Result<CopyInfo<D>>
+) -> anyhow::Result<Summary>
 where
     S: Source<'s> + ?Sized,
     D: Destination + ?Sized,
@@ -25,10 +25,10 @@ where
     let num_present = delta.num_present;
     let missing = delta.missing.iter().map(|&item| (item.0, item.2)).collect();
     let objects = src.yield_objects(delta.missing)?;
-    Ok(CopyInfo {
+    dst.insert_objects(objects)?;
+    Ok(Summary {
         num_present,
         missing,
-        progress: dst.insert_objects(objects)?,
     })
 }
 
@@ -58,9 +58,6 @@ pub trait Source<'s> {
 
 /// A destination repository to copy to.
 pub trait Destination {
-    /// Stream of progress updates.
-    type Progress: Iterator<Item = anyhow::Result<Progress>>;
-
     /// Returns `Ok(true)` if the repository contains a tree object with the given unique ID, or
     /// `Ok(false)` otherwise.
     ///
@@ -74,7 +71,7 @@ pub trait Destination {
     /// Copies the stream of objects to the repository, returning a stream of progress updates.
     ///
     /// Returns `Err` if any element of `objects` is `Err`, or an I/O error occurred.
-    fn insert_objects<I>(&mut self, stream: I) -> anyhow::Result<Self::Progress>
+    fn insert_objects<I>(&mut self, stream: I) -> anyhow::Result<()>
     where
         I: Iterator<Item = anyhow::Result<Object>>;
 }
@@ -88,21 +85,19 @@ pub struct Delta {
     pub missing: Closure,
 }
 
-/// Represents an ongoing copy operation.
+/// Summary of a completed copy operation.
 ///
 /// This struct is created by [`copy_closure()`]. See its documentation for more.
 #[derive(Debug)]
-pub struct CopyInfo<D: Destination + ?Sized> {
+pub struct Summary {
     /// Number of objects already present on the destination.
     pub num_present: usize,
-    /// Objects that are missing at the destination.
+    /// Missing objects that were copied to the destination.
     pub missing: BTreeMap<ObjectId, u64>,
-    /// Stream of progress updates.
-    pub progress: D::Progress,
 }
 
-impl<D: Destination + ?Sized> CopyInfo<D> {
-    /// Returns the unpacked size of the objects being copied to the destination.
+impl Summary {
+    /// Returns the unpacked size of the closure copied to the destination.
     #[inline]
     pub fn unpacked_size(&self) -> u64 {
         self.missing.values().sum()
