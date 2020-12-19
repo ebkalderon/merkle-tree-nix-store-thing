@@ -80,7 +80,7 @@ impl<W: Write> PackWriter<W> {
                 } else {
                     EntryKind::Blob
                 };
-                let header = make_header(blob.object_id(), kind, blob.len());
+                let header = make_header(blob.object_id(), kind, blob.size());
                 self.inner.write_all(&header)?;
                 let mut content = blob.into_content()?;
                 util::copy_wide(&mut content, &mut self.inner)?;
@@ -116,11 +116,11 @@ impl<W: Write> PackWriter<W> {
     }
 }
 
-fn make_header(id: ObjectId, kind: EntryKind, len: u64) -> [u8; HEADER_LEN] {
+fn make_header(id: ObjectId, kind: EntryKind, size: u64) -> [u8; HEADER_LEN] {
     let mut buf = [0u8; HEADER_LEN];
     buf[..ObjectId::LENGTH].copy_from_slice(id.as_bytes());
     buf[ObjectId::LENGTH] = kind as u8;
-    buf[ObjectId::LENGTH + 1..].copy_from_slice(&len.to_be_bytes());
+    buf[ObjectId::LENGTH + 1..].copy_from_slice(&size.to_be_bytes());
     buf
 }
 
@@ -167,11 +167,11 @@ impl<R: Read> PackReader<R> {
                 .try_into()
                 .map(ObjectId::from_bytes)?;
             let kind = EntryKind::try_from(header[ObjectId::LENGTH])?;
-            let len = header[ObjectId::LENGTH + 1..]
+            let size = header[ObjectId::LENGTH + 1..]
                 .try_into()
                 .map(u64::from_be_bytes)?;
 
-            Ok((object_id, kind, len))
+            Ok((object_id, kind, size))
         }
 
         match self.state {
@@ -188,14 +188,14 @@ impl<R: Read> PackReader<R> {
             return Ok(None);
         }
 
-        let (object_id, kind, len) = parse_header(header)?;
+        let (object_id, kind, size) = parse_header(header)?;
         self.state = State::Reading;
 
         Ok(Some(Entry {
             id: object_id,
             kind,
-            len,
-            stream: self.inner.by_ref().take(len),
+            size,
+            stream: self.inner.by_ref().take(size),
             state: &mut self.state,
         }))
     }
@@ -217,7 +217,7 @@ impl<'a, R: Read> Iterator for PackReader<R> {
 pub struct Entry<'a, R> {
     id: ObjectId,
     kind: EntryKind,
-    len: u64,
+    size: u64,
     stream: io::Take<&'a mut R>,
     state: &'a mut State,
 }
@@ -237,8 +237,8 @@ impl<'a, R: Read> Entry<'a, R> {
 
     /// Returns the size, in bytes, of the contained object.
     #[inline]
-    pub fn len(&self) -> u64 {
-        self.len
+    pub fn size(&self) -> u64 {
+        self.size
     }
 
     /// Deserializes the rest of this entry into an [`Object`](super::Object).
@@ -254,19 +254,19 @@ impl<'a, R: Read> Entry<'a, R> {
                 Object::Blob(blob)
             }
             EntryKind::Tree => {
-                let mut buffer = vec![0u8; self.len as usize].into_boxed_slice();
+                let mut buffer = vec![0u8; self.size as usize].into_boxed_slice();
                 self.read_exact(&mut buffer)?;
                 let tree = serde_json::from_slice(&buffer)?;
                 Object::Tree(tree)
             }
             EntryKind::Package => {
-                let mut buffer = vec![0u8; self.len as usize].into_boxed_slice();
+                let mut buffer = vec![0u8; self.size as usize].into_boxed_slice();
                 self.read_exact(&mut buffer)?;
                 let pkg = serde_json::from_slice(&buffer)?;
                 Object::Package(pkg)
             }
             EntryKind::Spec => {
-                let mut buffer = vec![0u8; self.len as usize].into_boxed_slice();
+                let mut buffer = vec![0u8; self.size as usize].into_boxed_slice();
                 self.read_exact(&mut buffer)?;
                 let spec = serde_json::from_slice(&buffer)?;
                 Object::Spec(spec)
@@ -307,7 +307,7 @@ impl<'a, R> Debug for Entry<'a, R> {
         f.debug_struct(stringify!(Entry))
             .field("id", &self.id)
             .field("kind", &ObjectKind::from(self.kind))
-            .field("len", &self.len)
+            .field("size", &self.size)
             .finish()
     }
 }

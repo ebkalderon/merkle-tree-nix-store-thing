@@ -46,7 +46,7 @@ pub trait ContentAddressable {
     fn object_id(&self) -> ObjectId;
 
     /// Returns the size of the object, in bytes.
-    fn len(&self) -> u64;
+    fn size(&self) -> u64;
 }
 
 /// A list specifying all types of `Store` objects.
@@ -179,12 +179,12 @@ impl ContentAddressable for Object {
         }
     }
 
-    fn len(&self) -> u64 {
+    fn size(&self) -> u64 {
         match *self {
-            Object::Blob(ref o) => o.len(),
-            Object::Tree(ref t) => t.len(),
-            Object::Package(ref o) => o.len(),
-            Object::Spec(ref o) => o.len(),
+            Object::Blob(ref o) => o.size(),
+            Object::Tree(ref t) => t.size(),
+            Object::Package(ref o) => o.size(),
+            Object::Spec(ref o) => o.size(),
         }
     }
 }
@@ -206,7 +206,7 @@ enum Kind {
 pub struct Blob {
     stream: Kind,
     is_executable: bool,
-    length: u64,
+    size: u64,
     object_id: ObjectId,
 }
 
@@ -219,7 +219,7 @@ impl Blob {
         let (hasher, references) = writer.into_inner();
 
         let blob = Blob {
-            length: input.len() as u64,
+            size: input.len() as u64,
             stream: Kind::Inline(Cursor::new(input)),
             is_executable,
             object_id: hasher.object_id(),
@@ -270,7 +270,7 @@ impl Blob {
         BlobWriter {
             inner: ReferenceSink::new(HashWriter::with_hasher(hasher, spooled)),
             is_executable,
-            length: 0,
+            size: 0,
         }
     }
 
@@ -280,7 +280,7 @@ impl Blob {
         Ok(Blob {
             stream: Kind::Store(path),
             is_executable: metadata.mode() & 0o100 != 0,
-            length: metadata.len(),
+            size: metadata.len(),
             object_id,
         })
     }
@@ -348,8 +348,8 @@ impl ContentAddressable for Blob {
         self.object_id
     }
 
-    fn len(&self) -> u64 {
-        self.length
+    fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -389,7 +389,7 @@ impl Seek for Contents {
 pub struct BlobWriter {
     inner: ReferenceSink<HashWriter<SpooledTempFile>>,
     is_executable: bool,
-    length: u64,
+    size: u64,
 }
 
 impl BlobWriter {
@@ -400,7 +400,7 @@ impl BlobWriter {
             object_id: hasher.object_id(),
             stream: Kind::Spooled(hasher.into_inner()),
             is_executable: self.is_executable,
-            length: self.length,
+            size: self.size,
         };
 
         (blob, references)
@@ -410,7 +410,7 @@ impl BlobWriter {
 impl Write for BlobWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let len = self.inner.write(buf)?;
-        self.length += len as u64;
+        self.size += len as u64;
         Ok(len)
     }
 
@@ -456,11 +456,11 @@ impl ObjectExt for Tree {
 
 impl ContentAddressable for Tree {
     fn object_id(&self) -> ObjectId {
-        self.interned_id_len().0
+        self.interned_id_size().0
     }
 
-    fn len(&self) -> u64 {
-        self.interned_id_len().1
+    fn size(&self) -> u64 {
+        self.interned_id_size().1
     }
 }
 
@@ -497,11 +497,11 @@ impl ObjectExt for Package {
 
 impl ContentAddressable for Package {
     fn object_id(&self) -> ObjectId {
-        self.interned_id_len().0
+        self.interned_id_size().0
     }
 
-    fn len(&self) -> u64 {
-        self.interned_id_len().1
+    fn size(&self) -> u64 {
+        self.interned_id_size().1
     }
 }
 
@@ -536,11 +536,11 @@ impl ObjectExt for Spec {
 
 impl ContentAddressable for Spec {
     fn object_id(&self) -> ObjectId {
-        self.interned_id_len().0
+        self.interned_id_size().0
     }
 
-    fn len(&self) -> u64 {
-        self.interned_id_len().1
+    fn size(&self) -> u64 {
+        self.interned_id_size().1
     }
 }
 
@@ -549,8 +549,8 @@ pub(crate) trait ObjectExt: Serialize + Hash + Sized {
     /// Hasher to use when computing the object ID.
     fn hasher() -> id::Hasher;
 
-    /// Returns the object ID and on-disk length of the object.
-    fn interned_id_len(&self) -> (ObjectId, u64) {
+    /// Returns the ID and size, in bytes, of the object.
+    fn interned_id_size(&self) -> (ObjectId, u64) {
         use cached::{Cached, SizedCache};
         use once_cell::sync::Lazy;
         use std::hash::Hasher;
