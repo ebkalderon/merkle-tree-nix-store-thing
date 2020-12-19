@@ -1,5 +1,6 @@
 //! Binary serialization format for moving `Object`s between stores.
 
+use std::cell::{Cell, RefCell};
 use std::convert::{TryFrom, TryInto};
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Read, Write};
@@ -125,10 +126,8 @@ fn make_header(id: ObjectId, kind: EntryKind, size: u64) -> [u8; HEADER_LEN] {
 }
 
 /// Deserializes a binary packfile into an iterator of `Object`s.
-#[derive(Debug)]
 pub struct PackReader<R> {
-    inner: R,
-    state: State,
+    inner: PackReaderInner<R>,
 }
 
 impl<R: Read> PackReader<R> {
@@ -136,32 +135,71 @@ impl<R: Read> PackReader<R> {
     ///
     /// Returns `Err` if the given I/O stream is not in pack format.
     pub fn new(mut inner: R) -> anyhow::Result<Self> {
-        let state = State::Ready;
         let mut header = [0u8; MAGIC_VALUE.len() + 1];
         inner.read_exact(&mut header)?;
+
+        let inner = PackReaderInner {
+            reader: RefCell::new(inner),
+            state: Cell::new(State::Ready),
+        };
+
         match &header[..] {
-            [m @ .., FORMAT_VERSION] if m == MAGIC_VALUE => Ok(PackReader { inner, state }),
+            [m @ .., FORMAT_VERSION] if m == MAGIC_VALUE => Ok(PackReader { inner }),
             _ => Err(anyhow!("magic value not found, not a store packfile")),
         }
     }
 
     /// Unwraps this `PackReader<R>`, returning the underlying buffer.
     pub fn into_inner(self) -> R {
-        self.inner
+        self.inner.reader.into_inner()
     }
 
-    /// Parses and returns the next entry in the pack stream, if any.
+    /// Iterates over each entry in the pack stream.
     ///
-    /// The [`Entry`] returned by this method is _lazy_: it does not buffer the entire contents
-    /// into memory when created. Instead, the caller is expected to drain the `Entry` completely,
-    /// either via [`Entry::deserialize()`] or the [`std::io::Read`] implementation, before calling
-    /// this method again.
+    /// The [`Entry`] items yielded by this iterator are _lazy_: they do not buffer their entire
+    /// contents into memory when created. Instead, the caller is expected to drain the `Entry`
+    /// completely, either via [`Entry::deserialize()`] or the [`std::io::Read`] implementation,
+    /// before advancing the iterator to the next item.
     ///
-    /// If this method is called again without completely draining the previous `Entry`, it will
-    /// always return `Err`.
-    ///
-    /// Returns `Err` if the entry header could not be parsed or an I/O error occurred.
-    pub fn next_entry(&mut self) -> anyhow::Result<Option<Entry<R>>> {
+    /// If the iterator is advanced without completely draining the previous `Entry`, it will
+    /// always return `Err` forever until the `Entry` is completely drained.
+    pub fn entries(&mut self) -> Entries<R> {
+        Entries { inner: &self.inner }
+    }
+}
+
+/// Deserializes the entire pack file into a stream of objects.
+impl<R: Read> IntoIterator for PackReader<R> {
+    type Item = anyhow::Result<Object>;
+    type IntoIter = Objects<R>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Objects { inner: self.inner }
+    }
+}
+
+impl<R: Debug> Debug for PackReader<R> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct(stringify!(PackReader))
+            .field("inner", &self.inner.reader)
+            .finish()
+    }
+}
+
+/// Inner type for `PackReader` that is fully immutable.
+///
+/// The reason behind this is significant. If the `next_entry()` method below were instead mutable,
+/// neither the `Entries` nor `Objects` iterators can be made to work, due to lifetime constraints.
+/// See below for another real-world example of this pattern in a similar program:
+///
+/// https://github.com/alexcrichton/tar-rs/blob/462ebb1a591f2ebb57abe1bcd9db5e42fe1738d8/src/archive.rs
+struct PackReaderInner<R> {
+    reader: RefCell<R>,
+    state: Cell<State>,
+}
+
+impl<R: Read> PackReaderInner<R> {
+    fn next_entry(&self) -> anyhow::Result<Option<Entry<R>>> {
         fn parse_header(header: [u8; HEADER_LEN]) -> anyhow::Result<(ObjectId, EntryKind, u64)> {
             let object_id = header[..ObjectId::LENGTH]
                 .try_into()
@@ -174,52 +212,49 @@ impl<R: Read> PackReader<R> {
             Ok((object_id, kind, size))
         }
 
-        match self.state {
+        match self.state.get() {
             State::Ready => {}
             State::Reading => return Err(anyhow!("previous `Entry` is not completely drained")),
             State::Done => return Ok(None),
         }
 
         let mut header = [0u8; HEADER_LEN];
-        self.inner.read_exact(&mut header)?;
+        self.reader.borrow_mut().read_exact(&mut header)?;
 
         if header.iter().all(|&b| b == 0) {
-            self.state = State::Done;
+            self.state.set(State::Done);
             return Ok(None);
         }
 
         let (object_id, kind, size) = parse_header(header)?;
-        self.state = State::Reading;
+        self.state.set(State::Reading);
 
         Ok(Some(Entry {
             id: object_id,
             kind,
             size,
-            stream: self.inner.by_ref().take(size),
-            state: &mut self.state,
+            stream: (&self).take(size),
+            state: &self.state,
         }))
     }
 }
 
-impl<'a, R: Read> Iterator for PackReader<R> {
-    type Item = anyhow::Result<Object>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_entry()
-            .transpose()
-            .map(|r| r.and_then(|entry| entry.deserialize()))
+impl<'a, R: Read> Read for &'a PackReaderInner<R> {
+    fn read(&mut self, into: &mut [u8]) -> io::Result<usize> {
+        self.reader.borrow_mut().read(into)
     }
 }
 
 /// A read-only view into a single pack entry.
 ///
-/// This struct is created from [`PackReader::next_entry()`]. See its documentation for more.
+/// This struct is constructed by the [`Entries`] iterator returned by [`PackReader::entries()`].
+/// See its documentation for more.
 pub struct Entry<'a, R> {
     id: ObjectId,
     kind: EntryKind,
     size: u64,
-    stream: io::Take<&'a mut R>,
-    state: &'a mut State,
+    stream: io::Take<&'a PackReaderInner<R>>,
+    state: &'a Cell<State>,
 }
 
 impl<'a, R: Read> Entry<'a, R> {
@@ -286,16 +321,26 @@ impl<'a, R: Read> Entry<'a, R> {
     }
 }
 
+/// Reads the raw [`Object`](super::Object) content from this `Entry` in a streaming fashion.
+///
+/// # Safety
+///
+/// This interface does not verify the object against the [`ObjectId`](super::ObjectId) checksum
+/// returned by [`Entry::id()`]. It is the caller's responsibility to check this value after the
+/// underlying I/O stream has been exhausted.
+///
+/// For a safe and convenient deserialization method, use [`Entry::deserialize()`].
 impl<'a, R: Read> Read for Entry<'a, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.state {
-            State::Ready | State::Done => return Ok(0),
+        match self.state.get() {
+            State::Ready => return Ok(0),
             State::Reading => {}
+            State::Done => unreachable!(),
         }
 
         let len = self.stream.read(buf)?;
         if self.stream.limit() == 0 {
-            *self.state = State::Ready;
+            self.state.set(State::Ready);
         }
 
         Ok(len)
@@ -312,12 +357,62 @@ impl<'a, R> Debug for Entry<'a, R> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy)]
 #[repr(u8)]
 enum State {
     Ready,
     Reading,
     Done,
+}
+
+/// An iterator over the entries of a pack file.
+///
+/// This struct is created by [`PackReader::entries()`]. See its documentation for details.
+pub struct Entries<'a, R: 'a> {
+    inner: &'a PackReaderInner<R>,
+}
+
+impl<'a, R: Read> Iterator for Entries<'a, R> {
+    type Item = anyhow::Result<Entry<'a, R>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next_entry().transpose()
+    }
+}
+
+impl<'a, R: Debug> Debug for Entries<'a, R> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct(stringify!(Entries))
+            .field("inner", &self.inner.reader)
+            .finish()
+    }
+}
+
+/// An iterator that deserializes a pack file into [`Object`](super::Object)s.
+///
+/// This struct is created by the `into_iter` method on [`PackReader`] (provided by the
+/// [`IntoIterator`] trait).
+pub struct Objects<R> {
+    inner: PackReaderInner<R>,
+}
+
+impl<R: Read> Iterator for Objects<R> {
+    type Item = anyhow::Result<Object>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next_entry()
+            .transpose()
+            .map(|r| r.and_then(|entry| entry.deserialize()))
+    }
+}
+
+impl<R: Debug> Debug for Objects<R> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct(stringify!(Objects))
+            .field("inner", &self.inner.reader)
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -381,7 +476,7 @@ mod tests {
         let reader = PackReader::new(full_buffer).expect("failed to init reader");
         let mut blob_ids = Vec::new();
 
-        for (i, result) in reader.enumerate() {
+        for (i, result) in reader.into_iter().enumerate() {
             eprintln!("received ({}): {:?}", i, result);
             match (i, result) {
                 (0, Ok(Object::Blob(b))) if !b.is_executable() => blob_ids.push(b.object_id()),
