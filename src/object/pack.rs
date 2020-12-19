@@ -1,21 +1,22 @@
 //! Binary serialization format for moving `Object`s between stores.
 
 use std::convert::{TryFrom, TryInto};
-use std::io::{Read, Write};
+use std::fmt::{self, Debug, Formatter};
+use std::io::{self, Read, Write};
 
 use anyhow::anyhow;
 use serde::Serialize;
 
-use super::{Blob, ContentAddressable, Object, ObjectId};
+use super::{Blob, ContentAddressable, Object, ObjectId, ObjectKind};
 use crate::util;
 
 const MAGIC_VALUE: &[u8] = b"store-pack";
 const FORMAT_VERSION: u8 = 1;
 const HEADER_LEN: usize = ObjectId::LENGTH + 9;
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 #[repr(u8)]
-enum ObjectKind {
+enum EntryKind {
     Blob = 0,
     Exec = 1,
     Tree = 2,
@@ -23,17 +24,28 @@ enum ObjectKind {
     Spec = 4,
 }
 
-impl TryFrom<u8> for ObjectKind {
+impl TryFrom<u8> for EntryKind {
     type Error = anyhow::Error;
 
     fn try_from(byte: u8) -> Result<Self, Self::Error> {
         match byte {
-            0 => Ok(ObjectKind::Blob),
-            1 => Ok(ObjectKind::Exec),
-            2 => Ok(ObjectKind::Tree),
-            3 => Ok(ObjectKind::Package),
-            4 => Ok(ObjectKind::Spec),
+            0 => Ok(EntryKind::Blob),
+            1 => Ok(EntryKind::Exec),
+            2 => Ok(EntryKind::Tree),
+            3 => Ok(EntryKind::Package),
+            4 => Ok(EntryKind::Spec),
             b => Err(anyhow!("unrecognized object kind byte: {}", b)),
+        }
+    }
+}
+
+impl From<EntryKind> for ObjectKind {
+    fn from(kind: EntryKind) -> Self {
+        match kind {
+            EntryKind::Blob | EntryKind::Exec => ObjectKind::Blob,
+            EntryKind::Tree => ObjectKind::Tree,
+            EntryKind::Package => ObjectKind::Package,
+            EntryKind::Spec => ObjectKind::Spec,
         }
     }
 }
@@ -64,25 +76,25 @@ impl<W: Write> PackWriter<W> {
         match o {
             Object::Blob(blob) => {
                 let kind = if blob.is_executable() {
-                    ObjectKind::Exec
+                    EntryKind::Exec
                 } else {
-                    ObjectKind::Blob
+                    EntryKind::Blob
                 };
                 let header = make_header(blob.object_id(), kind, blob.len());
                 self.inner.write_all(&header)?;
                 let mut content = blob.into_content()?;
                 util::copy_wide(&mut content, &mut self.inner)?;
             }
-            Object::Tree(tree) => self.write_meta_object(&tree, ObjectKind::Tree)?,
-            Object::Package(pkg) => self.write_meta_object(&pkg, ObjectKind::Package)?,
-            Object::Spec(spec) => self.write_meta_object(&spec, ObjectKind::Spec)?,
+            Object::Tree(tree) => self.write_meta_object(&tree, EntryKind::Tree)?,
+            Object::Package(pkg) => self.write_meta_object(&pkg, EntryKind::Package)?,
+            Object::Spec(spec) => self.write_meta_object(&spec, EntryKind::Spec)?,
         }
 
         self.inner.flush()?;
         Ok(())
     }
 
-    fn write_meta_object<O>(&mut self, obj: &O, kind: ObjectKind) -> anyhow::Result<()>
+    fn write_meta_object<O>(&mut self, obj: &O, kind: EntryKind) -> anyhow::Result<()>
     where
         O: ContentAddressable + Serialize,
     {
@@ -104,7 +116,7 @@ impl<W: Write> PackWriter<W> {
     }
 }
 
-fn make_header(id: ObjectId, kind: ObjectKind, len: u64) -> [u8; HEADER_LEN] {
+fn make_header(id: ObjectId, kind: EntryKind, len: u64) -> [u8; HEADER_LEN] {
     let mut buf = [0u8; HEADER_LEN];
     buf[..ObjectId::LENGTH].copy_from_slice(id.as_bytes());
     buf[ObjectId::LENGTH] = kind as u8;
@@ -116,7 +128,7 @@ fn make_header(id: ObjectId, kind: ObjectKind, len: u64) -> [u8; HEADER_LEN] {
 #[derive(Debug)]
 pub struct PackReader<R> {
     inner: R,
-    done: bool,
+    state: State,
 }
 
 impl<R: Read> PackReader<R> {
@@ -124,10 +136,11 @@ impl<R: Read> PackReader<R> {
     ///
     /// Returns `Err` if the given I/O stream is not in pack format.
     pub fn new(mut inner: R) -> anyhow::Result<Self> {
+        let state = State::Ready;
         let mut header = [0u8; MAGIC_VALUE.len() + 1];
         inner.read_exact(&mut header)?;
         match &header[..] {
-            [m @ .., FORMAT_VERSION] if m == MAGIC_VALUE => Ok(PackReader { inner, done: false }),
+            [m @ .., FORMAT_VERSION] if m == MAGIC_VALUE => Ok(PackReader { inner, state }),
             _ => Err(anyhow!("magic value not found, not a store packfile")),
         }
     }
@@ -137,12 +150,23 @@ impl<R: Read> PackReader<R> {
         self.inner
     }
 
-    fn next_object(&mut self) -> anyhow::Result<Option<Object>> {
-        fn parse_header(header: [u8; HEADER_LEN]) -> anyhow::Result<(ObjectId, ObjectKind, u64)> {
+    /// Parses and returns the next entry in the pack stream, if any.
+    ///
+    /// The [`Entry`] returned by this method is _lazy_: it does not buffer the entire contents
+    /// into memory when created. Instead, the caller is expected to drain the `Entry` completely,
+    /// either via [`Entry::deserialize()`] or the [`std::io::Read`] implementation, before calling
+    /// this method again.
+    ///
+    /// If this method is called again without completely draining the previous `Entry`, it will
+    /// always return `Err`.
+    ///
+    /// Returns `Err` if the entry header could not be parsed or an I/O error occurred.
+    pub fn next_entry(&mut self) -> anyhow::Result<Option<Entry<R>>> {
+        fn parse_header(header: [u8; HEADER_LEN]) -> anyhow::Result<(ObjectId, EntryKind, u64)> {
             let object_id = header[..ObjectId::LENGTH]
                 .try_into()
                 .map(ObjectId::from_bytes)?;
-            let kind = ObjectKind::try_from(header[ObjectId::LENGTH])?;
+            let kind = EntryKind::try_from(header[ObjectId::LENGTH])?;
             let len = header[ObjectId::LENGTH + 1..]
                 .try_into()
                 .map(u64::from_be_bytes)?;
@@ -150,66 +174,150 @@ impl<R: Read> PackReader<R> {
             Ok((object_id, kind, len))
         }
 
-        if self.done {
-            return Ok(None);
+        match self.state {
+            State::Ready => {}
+            State::Reading => return Err(anyhow!("previous `Entry` is not completely drained")),
+            State::Done => return Ok(None),
         }
 
         let mut header = [0u8; HEADER_LEN];
         self.inner.read_exact(&mut header)?;
 
         if header.iter().all(|&b| b == 0) {
-            self.done = true;
+            self.state = State::Done;
             return Ok(None);
         }
 
         let (object_id, kind, len) = parse_header(header)?;
-        let object = match kind {
-            ObjectKind::Blob | ObjectKind::Exec => {
-                let mut reader = (&mut self.inner).take(len);
-                let mut writer = Blob::from_writer(kind == ObjectKind::Exec);
-                util::copy_wide(&mut reader, &mut writer)?;
+        self.state = State::Reading;
+
+        Ok(Some(Entry {
+            id: object_id,
+            kind,
+            len,
+            stream: self.inner.by_ref().take(len),
+            state: &mut self.state,
+        }))
+    }
+}
+
+impl<'a, R: Read> Iterator for PackReader<R> {
+    type Item = anyhow::Result<Object>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_entry()
+            .transpose()
+            .map(|r| r.and_then(|entry| entry.deserialize()))
+    }
+}
+
+/// A read-only view into a single pack entry.
+///
+/// This struct is created from [`PackReader::next_entry()`]. See its documentation for more.
+pub struct Entry<'a, R> {
+    id: ObjectId,
+    kind: EntryKind,
+    len: u64,
+    stream: io::Take<&'a mut R>,
+    state: &'a mut State,
+}
+
+impl<'a, R: Read> Entry<'a, R> {
+    /// Returns the declared cryptographic hash of the contained object.
+    #[inline]
+    pub fn id(&self) -> ObjectId {
+        self.id
+    }
+
+    /// Returns the kind of the contained object.
+    #[inline]
+    pub fn kind(&self) -> ObjectKind {
+        self.kind.into()
+    }
+
+    /// Returns the size, in bytes, of the contained object.
+    #[inline]
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Deserializes the rest of this entry into an [`Object`](super::Object).
+    ///
+    /// Returns `Err` if the object failed to parse, the cryptographic hash did not match, or an
+    /// I/O error occurred.
+    pub fn deserialize(mut self) -> anyhow::Result<Object> {
+        let object = match self.kind {
+            EntryKind::Blob | EntryKind::Exec => {
+                let mut writer = Blob::from_writer(self.kind == EntryKind::Exec);
+                util::copy_wide(&mut self, &mut writer)?;
                 let (blob, _) = writer.finish();
                 Object::Blob(blob)
             }
-            ObjectKind::Tree => {
-                let mut buffer = vec![0u8; len as usize].into_boxed_slice();
-                self.inner.read_exact(&mut buffer)?;
+            EntryKind::Tree => {
+                let mut buffer = vec![0u8; self.len as usize].into_boxed_slice();
+                self.read_exact(&mut buffer)?;
                 let tree = serde_json::from_slice(&buffer)?;
                 Object::Tree(tree)
             }
-            ObjectKind::Package => {
-                let mut buffer = vec![0u8; len as usize].into_boxed_slice();
-                self.inner.read_exact(&mut buffer)?;
+            EntryKind::Package => {
+                let mut buffer = vec![0u8; self.len as usize].into_boxed_slice();
+                self.read_exact(&mut buffer)?;
                 let pkg = serde_json::from_slice(&buffer)?;
                 Object::Package(pkg)
             }
-            ObjectKind::Spec => {
-                let mut buffer = vec![0u8; len as usize].into_boxed_slice();
-                self.inner.read_exact(&mut buffer)?;
+            EntryKind::Spec => {
+                let mut buffer = vec![0u8; self.len as usize].into_boxed_slice();
+                self.read_exact(&mut buffer)?;
                 let spec = serde_json::from_slice(&buffer)?;
                 Object::Spec(spec)
             }
         };
 
-        if object.object_id() == object_id {
-            Ok(Some(object))
+        if object.object_id() == self.id {
+            Ok(object)
         } else {
             Err(anyhow!(
                 "hash mismatch: {:?} hashed to {}, but pack file lists {}",
                 object.kind(),
                 object.object_id(),
-                object_id
+                self.id
             ))
         }
     }
 }
 
-impl<R: Read> Iterator for PackReader<R> {
-    type Item = anyhow::Result<Object>;
+impl<'a, R: Read> Read for Entry<'a, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self.state {
+            State::Ready | State::Done => return Ok(0),
+            State::Reading => {}
+        }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_object().transpose()
+        let len = self.stream.read(buf)?;
+        if self.stream.limit() == 0 {
+            *self.state = State::Ready;
+        }
+
+        Ok(len)
     }
+}
+
+impl<'a, R> Debug for Entry<'a, R> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct(stringify!(Entry))
+            .field("id", &self.id)
+            .field("kind", &ObjectKind::from(self.kind))
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
+enum State {
+    Ready,
+    Reading,
+    Done,
 }
 
 #[cfg(test)]
@@ -273,9 +381,9 @@ mod tests {
         let reader = PackReader::new(full_buffer).expect("failed to init reader");
         let mut blob_ids = Vec::new();
 
-        for (i, entry) in reader.enumerate() {
-            eprintln!("received ({}): {:?}", i, entry);
-            match (i, entry) {
+        for (i, result) in reader.enumerate() {
+            eprintln!("received ({}): {:?}", i, result);
+            match (i, result) {
                 (0, Ok(Object::Blob(b))) if !b.is_executable() => blob_ids.push(b.object_id()),
                 (1, Ok(Object::Blob(b))) if b.is_executable() => blob_ids.push(b.object_id()),
                 (2, Ok(Object::Tree(t))) if t.entries.len() == 2 => {
