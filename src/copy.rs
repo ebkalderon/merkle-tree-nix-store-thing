@@ -1,6 +1,6 @@
 //! Functions for copying packages between stores.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::{Closure, Object, ObjectId, ObjectKind};
 
@@ -16,20 +16,15 @@ pub fn copy_closure<'s, S, D>(
     src: &'s S,
     dst: &mut D,
     pkgs: BTreeSet<ObjectId>,
-) -> anyhow::Result<Summary>
+) -> anyhow::Result<Delta>
 where
     S: Source<'s> + ?Sized,
     D: Destination + ?Sized,
 {
     let delta = src.find_missing(dst, pkgs)?;
-    let num_present = delta.num_present;
-    let missing = delta.missing.iter().map(|&item| (item.0, item.2)).collect();
-    let objects = src.yield_objects(delta.missing)?;
+    let objects = src.yield_objects(delta.missing.clone())?;
     dst.insert_objects(objects)?;
-    Ok(Summary {
-        num_present,
-        missing,
-    })
+    Ok(delta)
 }
 
 /// A source repository to copy from.
@@ -77,31 +72,14 @@ pub trait Destination {
 }
 
 /// A partial closure describing the delta between two package stores.
+///
+/// This struct is created by [`copy_closure()`]. See its documentation for more.
 #[derive(Debug)]
 pub struct Delta {
     /// Number of objects already present on the destination.
     pub num_present: usize,
     /// Closure of objects known to be missing on the destination.
     pub missing: Closure,
-}
-
-/// Summary of a completed copy operation.
-///
-/// This struct is created by [`copy_closure()`]. See its documentation for more.
-#[derive(Debug)]
-pub struct Summary {
-    /// Number of objects already present on the destination.
-    pub num_present: usize,
-    /// Missing objects that were copied to the destination.
-    pub missing: BTreeMap<ObjectId, u64>,
-}
-
-impl Summary {
-    /// Returns the unpacked size of the closure copied to the destination.
-    #[inline]
-    pub fn unpacked_size(&self) -> u64 {
-        self.missing.values().sum()
-    }
 }
 
 /// A progress update for an ongoing copy operation.
