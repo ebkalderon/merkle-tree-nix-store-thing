@@ -13,6 +13,7 @@ use crate::util;
 
 const MAGIC_VALUE: &[u8] = b"store-pack";
 const FORMAT_VERSION: u8 = 1;
+const PACK_MAGIC_LEN: usize = MAGIC_VALUE.len() + 1;
 const HEADER_LEN: usize = ObjectId::LENGTH + 9;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -62,10 +63,10 @@ impl<W: Write> PackWriter<W> {
     ///
     /// Returns `Err` if the magic value and pack format version could not be written.
     pub fn new(mut inner: W) -> anyhow::Result<Self> {
-        let mut begin_buf = [0u8; MAGIC_VALUE.len() + 1];
-        begin_buf[..MAGIC_VALUE.len()].copy_from_slice(MAGIC_VALUE);
-        begin_buf[MAGIC_VALUE.len()] = FORMAT_VERSION;
-        inner.write_all(&begin_buf)?;
+        let mut magic = [0u8; PACK_MAGIC_LEN];
+        magic[..MAGIC_VALUE.len()].copy_from_slice(MAGIC_VALUE);
+        magic[MAGIC_VALUE.len()] = FORMAT_VERSION;
+        inner.write_all(&magic)?;
         inner.flush()?;
         Ok(PackWriter { inner })
     }
@@ -135,15 +136,15 @@ impl<R: Read> PackReader<R> {
     ///
     /// Returns `Err` if the given I/O stream is not in pack format.
     pub fn new(mut inner: R) -> anyhow::Result<Self> {
-        let mut header = [0u8; MAGIC_VALUE.len() + 1];
-        inner.read_exact(&mut header)?;
+        let mut magic = [0u8; PACK_MAGIC_LEN];
+        inner.read_exact(&mut magic)?;
 
         let inner = PackReaderInner {
             reader: RefCell::new(inner),
             state: Cell::new(State::Ready),
         };
 
-        match &header[..] {
+        match &magic[..] {
             [m @ .., FORMAT_VERSION] if m == MAGIC_VALUE => Ok(PackReader { inner }),
             _ => Err(anyhow!("magic value not found, not a store packfile")),
         }
