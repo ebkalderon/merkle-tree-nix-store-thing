@@ -2,12 +2,17 @@
 
 use std::cmp::Ordering;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::str::FromStr;
+use std::task::{Context, Poll};
 
-use anyhow::Context;
+use anyhow::Context as AnyhowContext;
+use futures::ready;
+use pin_project_lite::pin_project;
 use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
+use tokio::io::AsyncWrite;
 
 /// A unique cryptographic hash representing an object (blob, tree, package).
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -170,17 +175,20 @@ impl Hasher {
     }
 }
 
-/// Wraps an I/O writer and hashes its contents, producing an `ObjectId`.
-///
-/// While writing, it is recommended to pass buffers of at least 8 KiB (AVX2) to 16 KiB (AVX2 +
-/// AVX-512) in size for best performance.
-#[derive(Debug)]
-pub struct HashWriter<W> {
-    inner: W,
-    hasher: Hasher,
+pin_project! {
+    /// Wraps an I/O writer and hashes its contents, producing an `ObjectId`.
+    ///
+    /// While writing, it is recommended to pass buffers of at least 8 KiB (AVX2) to 16 KiB (AVX2 +
+    /// AVX-512) in size for best performance.
+    #[derive(Debug)]
+    pub struct HashWriter<W> {
+        #[pin]
+        inner: W,
+        hasher: Hasher,
+    }
 }
 
-impl<W: Write> HashWriter<W> {
+impl<W> HashWriter<W> {
     /// Creates a new `HashWriter<W>` with the given `Hasher` instance.
     pub fn with_hasher(hasher: Hasher, inner: W) -> Self {
         HashWriter { inner, hasher }
@@ -198,7 +206,7 @@ impl<W: Write> HashWriter<W> {
 }
 
 impl<W: Write> Write for HashWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let len = self.inner.write(buf)?;
 
         if len >= 128 * 1024 * 1024 {
@@ -210,8 +218,32 @@ impl<W: Write> Write for HashWriter<W> {
         Ok(len)
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
+    }
+}
+
+impl<W: AsyncWrite> AsyncWrite for HashWriter<W> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context, buf: &[u8]) -> Poll<io::Result<usize>> {
+        let self_ = self.project();
+
+        let len = ready!(self_.inner.poll_write(cx, buf))?;
+
+        if len >= 128 * 1024 * 1024 {
+            self_.hasher.par_update(&buf[..len]);
+        } else {
+            self_.hasher.update(&buf[..len]);
+        }
+
+        Poll::Ready(Ok(len))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        self.as_mut().poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        self.as_mut().poll_shutdown(cx)
     }
 }
 
