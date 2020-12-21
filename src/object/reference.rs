@@ -3,7 +3,10 @@
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::Path;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
+use futures::ready;
 use nom::bytes::complete::{self, tag};
 use nom::bytes::streaming::take;
 use nom::character::complete::{anychar, hex_digit1};
@@ -11,6 +14,8 @@ use nom::combinator::{complete, map, map_parser, map_res, verify};
 use nom::multi::{many0, many_till};
 use nom::sequence::{pair, preceded};
 use nom::IResult;
+use pin_project_lite::pin_project;
+use tokio::io::AsyncWrite;
 
 use super::{name::is_package_name, ObjectId};
 
@@ -120,20 +125,23 @@ impl<W: Write> Write for RewriteSink<W> {
     }
 }
 
-/// Wraps a writer and scans the bytes being written for references.
-///
-/// In this context, a "reference" is a byte string containing a relative or absolute path pointing
-/// to an installed package entry in the store. Scanning for path references in script files and
-/// executable binaries is a critical step in detecting run-time dependencies for
-/// [`Package`](crate::Package) objects.
-#[derive(Debug)]
-pub struct ReferenceSink<W> {
-    inner: W,
-    refs: References,
-    buf: Vec<u8>,
+pin_project! {
+    /// Wraps a writer and scans the bytes being written for references.
+    ///
+    /// In this context, a "reference" is a byte string containing a relative or absolute path
+    /// pointing to an installed package entry in the store. Scanning for path references in script
+    /// files and executable binaries is a critical step in detecting run-time dependencies for
+    /// [`Package`](crate::Package) objects.
+    #[derive(Debug)]
+    pub struct ReferenceSink<W> {
+        #[pin]
+        inner: W,
+        refs: References,
+        buf: Vec<u8>,
+    }
 }
 
-impl<W: Write> ReferenceSink<W> {
+impl<W> ReferenceSink<W> {
     /// Creates a new `ReferenceSink<W>` which will scan `inner` for references.
     pub fn new(inner: W) -> Self {
         ReferenceSink {
@@ -143,7 +151,8 @@ impl<W: Write> ReferenceSink<W> {
         }
     }
 
-    /// Unwraps this `ReferenceSink<W>`, returning the underlying writer and any detected references.
+    /// Unwraps this `ReferenceSink<W>`, returning the underlying writer and any detected
+    /// references.
     pub fn into_inner(self) -> (W, References) {
         (self.inner, self.refs)
     }
@@ -169,6 +178,35 @@ impl<W: Write> Write for ReferenceSink<W> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
+    }
+}
+
+impl<W: AsyncWrite> AsyncWrite for ReferenceSink<W> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context, buf: &[u8]) -> Poll<io::Result<usize>> {
+        let self_ = self.project();
+
+        let len = ready!(self_.inner.poll_write(cx, buf))?;
+        self_.buf.extend_from_slice(&buf[..len]);
+
+        match many1_streaming(reference)(&self_.buf) {
+            Err(nom::Err::Incomplete(_)) => {}
+            Err(_) => self_.buf.clear(),
+            Ok((remaining, pkg_id)) => {
+                self_.refs.extend(pkg_id);
+                let consumed = self_.buf.len() - remaining.len();
+                self_.buf.drain(..consumed);
+            }
+        }
+
+        Poll::Ready(Ok(len))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        self.as_mut().poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        self.as_mut().poll_shutdown(cx)
     }
 }
 
