@@ -6,8 +6,12 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
+use async_trait::async_trait;
+use futures::{pin_mut, StreamExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::copy::{Delta, Destination, Source};
+use crate::pack::{pack_reader, PackWriter};
 use crate::{closure, Closure, Object, ObjectId, ObjectKind, Objects, Package, Store};
 
 mod fs;
@@ -83,9 +87,8 @@ impl<B: Backend> Store for LocalStore<B> {
     }
 }
 
-impl<'s, B: Backend> Source<'s> for LocalStore<B> {
-    type Objects = Box<dyn Iterator<Item = anyhow::Result<Object>> + 's>;
-
+#[async_trait(?Send)]
+impl<B: Backend> Source for LocalStore<B> {
     fn find_missing<D>(&self, dst: &D, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Delta>
     where
         D: Destination + ?Sized,
@@ -111,23 +114,37 @@ impl<'s, B: Backend> Source<'s> for LocalStore<B> {
         })
     }
 
-    fn yield_objects(&'s self, closure: Closure) -> anyhow::Result<Self::Objects> {
-        Ok(Box::new(closure.sort_yield().into_iter().map(
-            move |(id, kind, _)| self.objects.get_object(id, Some(kind)),
-        )))
+    async fn send_pack<W>(&self, closure: Closure, writer: &mut W) -> anyhow::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let mut writer = PackWriter::new(writer).await?;
+
+        for (id, kind, _) in closure.sort_yield() {
+            let obj = self.objects.get_object(id, Some(kind))?;
+            writer.append(obj).await?;
+        }
+
+        writer.finish().await?;
+
+        Ok(())
     }
 }
 
+#[async_trait(?Send)]
 impl<B: Backend> Destination for LocalStore<B> {
     fn contains(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool> {
         self.objects.contains_object(id, kind)
     }
 
-    fn insert_objects<I>(&mut self, stream: I) -> anyhow::Result<()>
+    async fn recv_pack<R>(&mut self, reader: &mut R) -> anyhow::Result<()>
     where
-        I: Iterator<Item = anyhow::Result<Object>>,
+        R: AsyncRead + Unpin,
     {
-        for result in stream {
+        let stream = pack_reader(reader);
+        pin_mut!(stream);
+
+        while let Some(result) = stream.next().await {
             let obj = result?;
             self.insert_object(obj)?;
         }

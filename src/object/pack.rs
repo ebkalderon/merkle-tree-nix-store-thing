@@ -1,12 +1,13 @@
 //! Binary serialization format for moving `Object`s between stores.
 
-use std::cell::{Cell, RefCell};
 use std::convert::{TryFrom, TryInto};
-use std::fmt::{self, Debug, Formatter};
-use std::io::{self, Read, Write};
+use std::io;
+use std::os::unix::io::{FromRawFd, IntoRawFd};
 
 use anyhow::anyhow;
+use futures::{stream, Stream};
 use serde::Serialize;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::{Blob, ContentAddressable, Object, ObjectId, ObjectKind};
 use crate::util;
@@ -58,23 +59,23 @@ pub struct PackWriter<W> {
     inner: W,
 }
 
-impl<W: Write> PackWriter<W> {
+impl<W: AsyncWrite + Unpin> PackWriter<W> {
     /// Creates a new `PackWriter<W>`.
     ///
     /// Returns `Err` if the magic value and pack format version could not be written.
-    pub fn new(mut inner: W) -> anyhow::Result<Self> {
+    pub async fn new(mut inner: W) -> anyhow::Result<Self> {
         let mut magic = [0u8; PACK_MAGIC_LEN];
         magic[..MAGIC_VALUE.len()].copy_from_slice(MAGIC_VALUE);
         magic[MAGIC_VALUE.len()] = FORMAT_VERSION;
-        inner.write_all(&magic)?;
-        inner.flush()?;
+        inner.write_all(&magic).await?;
+        inner.flush().await?;
         Ok(PackWriter { inner })
     }
 
     /// Appends the given object to the pack, writing it to the underlying buffer.
     ///
     /// Returns `Err` if a serialization or I/O error occurred.
-    pub fn append(&mut self, o: Object) -> anyhow::Result<()> {
+    pub async fn append(&mut self, o: Object) -> anyhow::Result<()> {
         match o {
             Object::Blob(blob) => {
                 let kind = if blob.is_executable() {
@@ -83,37 +84,48 @@ impl<W: Write> PackWriter<W> {
                     EntryKind::Blob
                 };
                 let header = make_header(blob.object_id(), kind, blob.size());
-                self.inner.write_all(&header)?;
-                let mut content = blob.into_content()?;
-                util::copy_wide(&mut content, &mut self.inner)?;
+                self.inner.write_all(&header).await?;
+
+                let (reader, mut sync_writer) = os_pipe::pipe()?;
+                let mut reader = unsafe { tokio::fs::File::from_raw_fd(reader.into_raw_fd()) };
+
+                let handle = tokio::task::spawn_blocking(move || -> io::Result<_> {
+                    let mut content = blob.into_content()?;
+                    util::copy_wide(&mut content, &mut sync_writer)?;
+                    Ok(())
+                });
+
+                tokio::io::copy(&mut reader, &mut self.inner).await?;
+                handle.await.unwrap()?;
             }
-            Object::Tree(tree) => self.write_meta_object(&tree, EntryKind::Tree)?,
-            Object::Package(pkg) => self.write_meta_object(&pkg, EntryKind::Package)?,
-            Object::Spec(spec) => self.write_meta_object(&spec, EntryKind::Spec)?,
+            Object::Tree(tree) => self.write_meta_object(&tree, EntryKind::Tree).await?,
+            Object::Package(pkg) => self.write_meta_object(&pkg, EntryKind::Package).await?,
+            Object::Spec(spec) => self.write_meta_object(&spec, EntryKind::Spec).await?,
         }
 
-        self.inner.flush()?;
+        self.inner.flush().await?;
+
         Ok(())
     }
 
-    fn write_meta_object<O>(&mut self, obj: &O, kind: EntryKind) -> anyhow::Result<()>
+    async fn write_meta_object<O>(&mut self, obj: &O, kind: EntryKind) -> anyhow::Result<()>
     where
         O: ContentAddressable + Serialize,
     {
         let body = serde_json::to_vec(&obj)?;
         let header = make_header(obj.object_id(), kind, body.len() as u64);
         let combined: Vec<_> = header.iter().copied().chain(body).collect();
-        self.inner.write_all(&combined)?;
+        self.inner.write_all(&combined).await?;
         Ok(())
     }
 
     /// Writes the pack footer and unwraps this `PackWriter<W>`, returning the underlying buffer.
     ///
     /// Returns `Err` if the footer could not be written or the buffer could not be flushed.
-    pub fn finish(self) -> anyhow::Result<W> {
+    pub async fn finish(self) -> anyhow::Result<W> {
         let mut inner = self.inner;
-        inner.write_all(&[0u8; HEADER_LEN])?;
-        inner.flush()?;
+        inner.write_all(&[0u8; HEADER_LEN]).await?;
+        inner.flush().await?;
         Ok(inner)
     }
 }
@@ -126,81 +138,23 @@ fn make_header(id: ObjectId, kind: EntryKind, size: u64) -> [u8; HEADER_LEN] {
     buf
 }
 
-/// Deserializes a binary packfile into an iterator of `Object`s.
-pub struct PackReader<R> {
-    inner: PackReaderInner<R>,
-}
-
-impl<R: Read> PackReader<R> {
-    /// Creates a new `PackReader<R>`.
-    ///
-    /// Returns `Err` if the given I/O stream is not in pack format.
-    pub fn new(mut inner: R) -> anyhow::Result<Self> {
-        let mut magic = [0u8; PACK_MAGIC_LEN];
-        inner.read_exact(&mut magic)?;
-
-        let inner = PackReaderInner {
-            reader: RefCell::new(inner),
-            state: Cell::new(State::Ready),
-        };
-
-        match &magic[..] {
-            [m @ .., FORMAT_VERSION] if m == MAGIC_VALUE => Ok(PackReader { inner }),
-            _ => Err(anyhow!("magic value not found, not a store packfile")),
-        }
-    }
-
-    /// Unwraps this `PackReader<R>`, returning the underlying buffer.
-    pub fn into_inner(self) -> R {
-        self.inner.reader.into_inner()
-    }
-
-    /// Iterates over each entry in the pack stream.
-    ///
-    /// The [`Entry`] items yielded by this iterator are _lazy_: they do not buffer their entire
-    /// contents into memory when created. Instead, the caller is expected to drain the `Entry`
-    /// completely, either via [`Entry::deserialize()`] or the [`std::io::Read`] implementation,
-    /// before advancing the iterator to the next item.
-    ///
-    /// If the iterator is advanced without completely draining the previous `Entry`, it will
-    /// always return `Err` forever until the `Entry` is completely drained.
-    pub fn entries(&mut self) -> Entries<R> {
-        Entries { inner: &self.inner }
-    }
-}
-
-/// Deserializes the entire pack file into a stream of objects.
-impl<R: Read> IntoIterator for PackReader<R> {
-    type Item = anyhow::Result<Object>;
-    type IntoIter = Objects<R>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        Objects { inner: self.inner }
-    }
-}
-
-impl<R: Debug> Debug for PackReader<R> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.debug_struct(stringify!(PackReader))
-            .field("inner", &self.inner.reader)
-            .finish()
-    }
-}
-
-/// Inner type for `PackReader` that is fully immutable.
+/// Deserializes a binary pack file into a stream of `Object`s.
 ///
-/// The reason behind this is significant. If the `next_entry()` method below were instead mutable,
-/// neither the `Entries` nor `Objects` iterators can be made to work, due to lifetime constraints.
-/// See below for another real-world example of this pattern in a similar program:
-///
-/// https://github.com/alexcrichton/tar-rs/blob/462ebb1a591f2ebb57abe1bcd9db5e42fe1738d8/src/archive.rs
-struct PackReaderInner<R> {
-    reader: RefCell<R>,
-    state: Cell<State>,
-}
+/// The stream may yield `Err` if the stream is not a pack file, an object entry failed to parse,
+/// the cryptographic hash for an object did not match, or an I/O error occurred.
+pub fn pack_reader<'a, R>(reader: R) -> impl Stream<Item = anyhow::Result<Object>> + 'a
+where
+    R: AsyncRead + Unpin + 'a,
+{
+    // `PackReader<R>` was turned from a struct into a function because implementing the logic
+    // entirely with polling was just too hard and too messy. Perhaps if Rust permits `async fn` in
+    // traits one day, and `AsyncRead` is defined in terms of `async fn`, we could restore the old
+    // implementation from the Git history, and sprinkle some `async`/`.await` keywords on it.
 
-impl<R: Read> PackReaderInner<R> {
-    fn next_entry(&self) -> anyhow::Result<Option<Entry<R>>> {
+    async fn next_entry<R>(reader: &mut R, is_start: bool) -> anyhow::Result<Option<Object>>
+    where
+        R: AsyncRead + Unpin,
+    {
         fn parse_header(header: [u8; HEADER_LEN]) -> anyhow::Result<(ObjectId, EntryKind, u64)> {
             let object_id = header[..ObjectId::LENGTH]
                 .try_into()
@@ -213,232 +167,89 @@ impl<R: Read> PackReaderInner<R> {
             Ok((object_id, kind, size))
         }
 
-        match self.state.get() {
-            State::Ready => {}
-            State::Reading => return Err(anyhow!("previous `Entry` is not completely drained")),
-            State::Done => return Ok(None),
+        if is_start {
+            let mut magic = [0u8; PACK_MAGIC_LEN];
+            reader.read_exact(&mut magic).await?;
+
+            match &magic[..] {
+                [m @ .., FORMAT_VERSION] if m == MAGIC_VALUE => {}
+                _ => return Err(anyhow!("magic value not found, not a store packfile")),
+            }
         }
 
         let mut header = [0u8; HEADER_LEN];
-        self.reader.borrow_mut().read_exact(&mut header)?;
+        reader.read_exact(&mut header).await?;
 
         if header.iter().all(|&b| b == 0) {
-            self.state.set(State::Done);
             return Ok(None);
         }
 
         let (object_id, kind, size) = parse_header(header)?;
-        self.state.set(State::Reading);
-
-        Ok(Some(Entry {
-            id: object_id,
-            kind,
-            size,
-            stream: (&self).take(size),
-            state: &self.state,
-            progress: None,
-        }))
-    }
-}
-
-impl<'a, R: Read> Read for &'a PackReaderInner<R> {
-    fn read(&mut self, into: &mut [u8]) -> io::Result<usize> {
-        self.reader.borrow_mut().read(into)
-    }
-}
-
-/// A read-only view into a single pack entry.
-///
-/// This struct is constructed by the [`Entries`] iterator returned by [`PackReader::entries()`].
-/// See its documentation for more.
-pub struct Entry<'a, R> {
-    id: ObjectId,
-    kind: EntryKind,
-    size: u64,
-    stream: io::Take<&'a PackReaderInner<R>>,
-    state: &'a Cell<State>,
-    progress: Option<Box<dyn FnMut(&ObjectId, u64) + 'a>>,
-}
-
-impl<'a, R: Read> Entry<'a, R> {
-    /// Specifies a callback function for monitoring read progress.
-    ///
-    /// The callback will receive the number of bytes read since the last progress increment. Note
-    /// that this callback is called inline with the underlying reader itself, so it should block
-    /// as little as possible to avoid negatively impacting performance.
-    ///
-    /// If a progress callback was already set, this method will replace it.
-    pub fn with_progress(mut self, callback: impl FnMut(&ObjectId, u64) + 'a) -> Self {
-        self.progress = Some(Box::new(callback));
-        self
-    }
-
-    /// Returns the declared cryptographic hash of the contained object.
-    #[inline]
-    pub fn id(&self) -> ObjectId {
-        self.id
-    }
-
-    /// Returns the kind of the contained object.
-    #[inline]
-    pub fn kind(&self) -> ObjectKind {
-        self.kind.into()
-    }
-
-    /// Returns the size, in bytes, of the contained object.
-    #[inline]
-    pub fn size(&self) -> u64 {
-        self.size
-    }
-
-    /// Deserializes the rest of this entry into an [`Object`](super::Object).
-    ///
-    /// Returns `Err` if the object failed to parse, the cryptographic hash did not match, or an
-    /// I/O error occurred.
-    pub fn deserialize(mut self) -> anyhow::Result<Object> {
-        let object = match self.kind {
+        let object = match kind {
             EntryKind::Blob | EntryKind::Exec => {
-                let mut writer = Blob::from_writer(self.kind == EntryKind::Exec);
-                util::copy_wide(&mut self, &mut writer)?;
-                let (blob, _) = writer.finish();
+                let (mut sync_reader, writer) = os_pipe::pipe()?;
+                let mut writer = unsafe { tokio::fs::File::from_raw_fd(writer.into_raw_fd()) };
+
+                let handle = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                    let mut sync_writer = Blob::from_writer(kind == EntryKind::Exec);
+                    util::copy_wide(&mut sync_reader, &mut sync_writer)?;
+                    let (blob, _) = sync_writer.finish();
+                    Ok(blob)
+                });
+
+                tokio::io::copy(&mut reader.take(size), &mut writer).await?;
+                drop(writer);
+
+                let blob = handle.await.unwrap()?;
                 Object::Blob(blob)
             }
             EntryKind::Tree => {
-                let mut buffer = vec![0u8; self.size as usize].into_boxed_slice();
-                self.read_exact(&mut buffer)?;
+                let mut buffer = vec![0u8; size as usize].into_boxed_slice();
+                reader.read_exact(&mut buffer).await?;
                 let tree = serde_json::from_slice(&buffer)?;
                 Object::Tree(tree)
             }
             EntryKind::Package => {
-                let mut buffer = vec![0u8; self.size as usize].into_boxed_slice();
-                self.read_exact(&mut buffer)?;
+                let mut buffer = vec![0u8; size as usize].into_boxed_slice();
+                reader.read_exact(&mut buffer).await?;
                 let pkg = serde_json::from_slice(&buffer)?;
                 Object::Package(pkg)
             }
             EntryKind::Spec => {
-                let mut buffer = vec![0u8; self.size as usize].into_boxed_slice();
-                self.read_exact(&mut buffer)?;
+                let mut buffer = vec![0u8; size as usize].into_boxed_slice();
+                reader.read_exact(&mut buffer).await?;
                 let spec = serde_json::from_slice(&buffer)?;
                 Object::Spec(spec)
             }
         };
 
-        if object.object_id() == self.id {
-            Ok(object)
+        if object.object_id() == object_id {
+            Ok(Some(object))
         } else {
             Err(anyhow!(
                 "hash mismatch: {:?} hashed to {}, but pack file lists {}",
                 object.kind(),
                 object.object_id(),
-                self.id
+                object_id
             ))
         }
     }
-}
 
-/// Reads the raw [`Object`](super::Object) content from this `Entry` in a streaming fashion.
-///
-/// # Safety
-///
-/// This interface does not verify the object against the [`ObjectId`](super::ObjectId) checksum
-/// returned by [`Entry::id()`]. It is the caller's responsibility to check this value after the
-/// underlying I/O stream has been exhausted.
-///
-/// For a safe and convenient deserialization method, use [`Entry::deserialize()`].
-impl<'a, R: Read> Read for Entry<'a, R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.state.get() {
-            State::Ready => return Ok(0),
-            State::Reading => {}
-            State::Done => unreachable!(),
-        }
-
-        let len = self.stream.read(buf)?;
-
-        if let Some(ref mut callback) = self.progress.as_mut() {
-            callback(&self.id, len as u64);
-        }
-
-        if self.stream.limit() == 0 {
-            self.state.set(State::Ready);
-        }
-
-        Ok(len)
-    }
-}
-
-impl<'a, R> Debug for Entry<'a, R> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.debug_struct(stringify!(Entry))
-            .field("id", &self.id)
-            .field("kind", &ObjectKind::from(self.kind))
-            .field("size", &self.size)
-            .finish()
-    }
-}
-
-#[derive(Clone, Copy)]
-#[repr(u8)]
-enum State {
-    Ready,
-    Reading,
-    Done,
-}
-
-/// An iterator over the entries of a pack file.
-///
-/// This struct is created by [`PackReader::entries()`]. See its documentation for details.
-pub struct Entries<'a, R: 'a> {
-    inner: &'a PackReaderInner<R>,
-}
-
-impl<'a, R: Read> Iterator for Entries<'a, R> {
-    type Item = anyhow::Result<Entry<'a, R>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next_entry().transpose()
-    }
-}
-
-impl<'a, R: Debug> Debug for Entries<'a, R> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.debug_struct(stringify!(Entries))
-            .field("inner", &self.inner.reader)
-            .finish()
-    }
-}
-
-/// An iterator that deserializes a pack file into [`Object`](super::Object)s.
-///
-/// This struct is created by the `into_iter` method on [`PackReader`] (provided by the
-/// [`IntoIterator`] trait).
-pub struct Objects<R> {
-    inner: PackReaderInner<R>,
-}
-
-impl<R: Read> Iterator for Objects<R> {
-    type Item = anyhow::Result<Object>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner
-            .next_entry()
+    stream::unfold((reader, true), |(mut reader, is_start)| async move {
+        next_entry(&mut reader, is_start)
+            .await
             .transpose()
-            .map(|r| r.and_then(|entry| entry.deserialize()))
-    }
-}
-
-impl<R: Debug> Debug for Objects<R> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.debug_struct(stringify!(Objects))
-            .field("inner", &self.inner.reader)
-            .finish()
-    }
+            .map(|res| (res, (reader, false)))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::io::{Seek, SeekFrom};
+    use std::io::SeekFrom;
+
+    use futures::{pin_mut, StreamExt};
+    use tokio::io::AsyncSeekExt;
 
     use super::*;
     use crate::{platform, Entry, Package, Platform, References, Tree};
@@ -482,21 +293,28 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn round_trip() {
+    #[tokio::test]
+    async fn round_trip() {
         let empty_buffer = std::io::Cursor::new(Vec::new());
-        let mut writer = PackWriter::new(empty_buffer).expect("failed to init writer");
+        let mut writer = PackWriter::new(empty_buffer)
+            .await
+            .expect("failed to init writer");
+
         for obj in example_objects() {
-            writer.append(obj).expect("failed to serialize object");
+            writer
+                .append(obj)
+                .await
+                .expect("failed to serialize object");
         }
 
-        let mut full_buffer = writer.finish().expect("failed to flush");
-        full_buffer.seek(SeekFrom::Start(0)).unwrap();
+        let mut full_buffer = writer.finish().await.expect("failed to flush");
+        full_buffer.seek(SeekFrom::Start(0)).await.unwrap();
 
-        let reader = PackReader::new(full_buffer).expect("failed to init reader");
         let mut blob_ids = Vec::new();
+        let reader = pack_reader(&mut full_buffer).enumerate();
+        pin_mut!(reader);
 
-        for (i, result) in reader.into_iter().enumerate() {
+        while let Some((i, result)) = reader.next().await {
             eprintln!("received ({}): {:?}", i, result);
             match (i, result) {
                 (0, Ok(Object::Blob(b))) if !b.is_executable() => blob_ids.push(b.object_id()),

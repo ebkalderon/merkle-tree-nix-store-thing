@@ -70,7 +70,7 @@ impl Backend for Filesystem {
 }
 
 /// A filesystem-backed `objects` directory.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FsObjects(PathBuf);
 
 impl Objects for FsObjects {

@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use foo::{Blob, Entry, LocalStore, Object, Objects, Package, Platform, Tree};
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
     // let mut store = Store::in_memory();
     let mut store: LocalStore = LocalStore::init("./store")?;
 
@@ -74,7 +75,7 @@ fn main() -> anyhow::Result<()> {
     let mut store2: LocalStore = LocalStore::init("./store2")?;
 
     println!("copying delta from store -> store2");
-    let info = foo::copy_closure(&store, &mut store2, pkgs)?;
+    let info = foo::copy_closure(&store, &mut store2, pkgs).await?;
     println!("{:?}", info);
 
     Ok(())

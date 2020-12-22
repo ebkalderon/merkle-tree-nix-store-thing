@@ -2,7 +2,12 @@
 
 use std::collections::BTreeSet;
 
-use crate::{Closure, Object, ObjectId, ObjectKind};
+use async_trait::async_trait;
+use futures::try_join;
+use tokio::fs::File;
+use tokio::io::{AsyncRead, AsyncWrite};
+
+use crate::{Closure, ObjectId, ObjectKind};
 
 /// Copies `pkgs` and all their dependencies from `src` to `dest`.
 ///
@@ -12,26 +17,28 @@ use crate::{Closure, Object, ObjectId, ObjectKind};
 /// If both `src` and `dst` are both remote hosts, the objects yielded by `src` will be routed
 /// through this host before being uploaded to `dst`. This is done for security reasons, where the
 /// credentials for both reside on the local machine. However, it can impose a performance penalty.
-pub fn copy_closure<'s, S, D>(
-    src: &'s S,
+pub async fn copy_closure<S, D>(
+    src: &S,
     dst: &mut D,
     pkgs: BTreeSet<ObjectId>,
 ) -> anyhow::Result<Delta>
 where
-    S: Source<'s> + ?Sized,
+    S: Source + ?Sized,
     D: Destination + ?Sized,
 {
     let delta = src.find_missing(dst, pkgs)?;
-    let objects = src.yield_objects(delta.missing.clone())?;
-    dst.insert_objects(objects)?;
+
+    let (mut reader, mut writer) = async_pipe()?;
+    let send = src.send_pack(delta.missing.clone(), &mut writer);
+    let recv = dst.recv_pack(&mut reader);
+    try_join!(send, recv)?;
+
     Ok(delta)
 }
 
 /// A source repository to copy from.
-pub trait Source<'s> {
-    /// Stream of tree objects.
-    type Objects: Iterator<Item = anyhow::Result<Object>> + 's;
-
+#[async_trait(?Send)]
+pub trait Source {
     /// Computes a delta closure which only contains objects that are missing at the destination.
     ///
     /// Returns `Err` if any of the given object IDs do not exist in this store, any of the object
@@ -41,17 +48,21 @@ pub trait Source<'s> {
     where
         D: Destination + ?Sized;
 
-    /// Iterates over the closure and lazily yields each element in reverse topological order.
+    /// Writes the objects in the closure as a pack file and sends it over the `writer`.
     ///
-    /// This ordering is important because it ensures objects and packages can be inserted into
-    /// stores in a consistent order, where all references are inserted before their referrers.
+    /// Elements _must_ be yielded in topological order for the pack to be considered valid. This
+    /// ordering is important because it ensures objects and packages can be inserted into stores
+    /// in a consistent order, where all references are inserted before their referrers.
     ///
     /// Returns `Err` if any of the object IDs do not actually exist in this store, or an I/O error
     /// occurred.
-    fn yield_objects(&'s self, closure: Closure) -> anyhow::Result<Self::Objects>;
+    async fn send_pack<W>(&self, closure: Closure, writer: &mut W) -> anyhow::Result<()>
+    where
+        W: AsyncWrite + Unpin;
 }
 
 /// A destination repository to copy to.
+#[async_trait(?Send)]
 pub trait Destination {
     /// Returns `Ok(true)` if the repository contains a tree object with the given unique ID, or
     /// `Ok(false)` otherwise.
@@ -63,12 +74,17 @@ pub trait Destination {
     /// Returns `Err` if an I/O error occurred.
     fn contains(&self, id: &ObjectId, kind: Option<ObjectKind>) -> anyhow::Result<bool>;
 
-    /// Copies the stream of objects to the repository, returning a stream of progress updates.
+    /// Copies the packfile stream from `reader` to the destination.
     ///
-    /// Returns `Err` if any element of `objects` is `Err`, or an I/O error occurred.
-    fn insert_objects<I>(&mut self, stream: I) -> anyhow::Result<()>
+    /// Elements _must_ be yielded in topological order for the pack to be considered valid. This
+    /// ordering is important because it ensures objects and packages can be inserted into stores
+    /// in a consistent order, where all references are inserted before their referrers.
+    ///
+    /// Returns `Err` if the pack stream could not be decoded, the yielded objects were not sorted
+    /// in topological order, or an I/O error occurred.
+    async fn recv_pack<R>(&mut self, reader: &mut R) -> anyhow::Result<()>
     where
-        I: Iterator<Item = anyhow::Result<Object>>;
+        R: AsyncRead + Unpin;
 }
 
 /// A partial closure describing the delta between two package stores.
@@ -89,4 +105,14 @@ pub struct Progress {
     pub id: ObjectId,
     /// Number of bytes copied so far.
     pub bytes_copied: u64,
+}
+
+fn async_pipe() -> std::io::Result<(File, File)> {
+    use std::os::unix::io::{FromRawFd, IntoRawFd};
+
+    let (reader, writer) = os_pipe::pipe()?;
+    let reader = unsafe { File::from_raw_fd(reader.into_raw_fd()) };
+    let writer = unsafe { File::from_raw_fd(writer.into_raw_fd()) };
+
+    Ok((reader, writer))
 }
