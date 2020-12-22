@@ -1,13 +1,52 @@
 //! Binary serialization format for moving `Object`s between stores.
+//!
+//! # Specification
+//!
+//! This binary format is intentionally very spartan and takes after TAR and the Git packfile
+//! formats, in most ways. It is an index-less format which optimizes for speedy encoding and
+//! decoding, along with efficient transmission over a network.
+//!
+//! It is intended as a simple and lightweight method of transferring a [`Closure`](crate::Closure)
+//! of [`Object`](crate::Object)s from one host to another.
+//!
+//! ## Header
+//!
+//! ```text
+//!  Magic value  Version
+//! +------------+-------+
+//! | store-pack |   1   | (11 bytes)
+//! +------------+-------+
+//! ```
+//!
+//! ## Packed `Object`s
+//!
+//! ```text
+//!                 Entry header (41 bytes)                  Object content
+//! +---------------+---------------+---------------------+  +-----------+
+//! | ID (32 bytes) | Kind (1 byte) | Size (u64 NE bytes) |  | <content> |  ... (repeat x n)
+//! +---------------+---------------+---------------------+  +-----------+
+//! ```
+//!
+//! ## Footer
+//!
+//! ```text
+//! +-----------------------------------------------------+
+//! |             Null entry header (41 bytes)            |
+//! +-----------------------------------------------------+
+//! ```
 
 use std::convert::{TryFrom, TryInto};
+use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use anyhow::anyhow;
-use futures::{stream, Stream};
+use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use futures::{ready, stream, Stream};
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use super::{Blob, ContentAddressable, Object, ObjectId, ObjectKind};
 use crate::util;
@@ -155,25 +194,13 @@ where
     where
         R: AsyncRead + Unpin,
     {
-        fn parse_header(header: [u8; HEADER_LEN]) -> anyhow::Result<(ObjectId, EntryKind, u64)> {
-            let object_id = header[..ObjectId::LENGTH]
-                .try_into()
-                .map(ObjectId::from_bytes)?;
-            let kind = EntryKind::try_from(header[ObjectId::LENGTH])?;
-            let size = header[ObjectId::LENGTH + 1..]
-                .try_into()
-                .map(u64::from_be_bytes)?;
-
-            Ok((object_id, kind, size))
-        }
-
         if is_start {
             let mut magic = [0u8; PACK_MAGIC_LEN];
             reader.read_exact(&mut magic).await?;
 
             match &magic[..] {
                 [m @ .., FORMAT_VERSION] if m == MAGIC_VALUE => {}
-                _ => return Err(anyhow!("magic value not found, not a store packfile")),
+                _ => return Err(anyhow!("magic value not found, not a store pack file")),
             }
         }
 
@@ -243,6 +270,194 @@ where
     })
 }
 
+/// Wraps a pack file stream and emits progress notifications from a channel.
+///
+/// This struct will immediately return an I/O error in the first call to
+/// [`AsyncRead::poll_read()`] if the underlying reader does not yield a valid pack file.
+///
+/// To create a new pack file, see the documentation for [`PackWriter`].
+pub struct PackStream<R> {
+    inner: R,
+    progress: Option<UnboundedSender<Progress>>,
+    state: StreamState,
+    received_bytes: u64,
+    num_objects: u64,
+}
+
+impl<R: AsyncRead + Unpin> PackStream<R> {
+    /// Creates a new `PackStream<R>` and a channel for receiving [`Progress`] notifications.
+    ///
+    /// Dropping the receiver will not interrupt the underlying I/O reader.
+    pub fn new(inner: R) -> (Self, UnboundedReceiver<Progress>) {
+        let (tx, rx) = mpsc::unbounded();
+
+        let stream = PackStream {
+            inner,
+            progress: Some(tx),
+            state: StreamState::Start { magic: Vec::new() },
+            received_bytes: 0,
+            num_objects: 0,
+        };
+
+        (stream, rx)
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for PackStream<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut ReadBuf,
+    ) -> Poll<io::Result<()>> {
+        if self.state == StreamState::Finished {
+            let msg = format!("unexpected trailing data in pack stream: {:?}", buf);
+            return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, msg)));
+        }
+
+        let self_ = &mut *self;
+        ready!(Pin::new(&mut self_.inner).poll_read(cx, buf))?;
+
+        let filled = buf.filled();
+        self_.received_bytes += filled.len() as u64;
+        let prog = self_.progress.as_mut().unwrap();
+
+        match &mut self_.state {
+            StreamState::Start { magic } => magic.extend_from_slice(filled),
+            StreamState::Header { header } => header.extend_from_slice(filled),
+            StreamState::Counting { current, .. } => *current += filled.len() as u64,
+            StreamState::Finished => unreachable!(),
+        }
+
+        loop {
+            match &mut self_.state {
+                StreamState::Start { magic } if magic.len() < PACK_MAGIC_LEN => break,
+                StreamState::Start { magic } => {
+                    match &magic[..PACK_MAGIC_LEN] {
+                        [m @ .., FORMAT_VERSION] if m == MAGIC_VALUE => {}
+                        _ => {
+                            let msg = "magic value not found, not a store pack file";
+                            let error = io::Error::new(io::ErrorKind::InvalidData, msg);
+                            return Poll::Ready(Err(error));
+                        }
+                    }
+
+                    self_.state = StreamState::Header {
+                        header: magic.split_off(PACK_MAGIC_LEN),
+                    };
+                }
+                StreamState::Header { header } if header.len() < HEADER_LEN => break,
+                StreamState::Header { header } if header[..HEADER_LEN].iter().all(|&b| b == 0) => {
+                    prog.unbounded_send(Progress::Finished {
+                        received_bytes: self_.received_bytes,
+                        num_objects: self_.num_objects,
+                    })
+                    .ok();
+
+                    self_.state = StreamState::Finished;
+                }
+                StreamState::Header { header } => {
+                    let buf = header[..HEADER_LEN].try_into().expect("length matches");
+                    let (id, kind, size) = parse_header(buf)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+                    self_.num_objects += 1;
+
+                    let kind = kind.into();
+                    prog.unbounded_send(Progress::Begin { id, kind, size }).ok();
+                    prog.unbounded_send(Progress::Read { bytes: 0 }).ok();
+
+                    let excess = (header.len() - HEADER_LEN) as u64;
+                    self_.state = StreamState::Counting {
+                        current: excess,
+                        total: size,
+                    };
+
+                    if excess == 0 {
+                        break;
+                    }
+                }
+                StreamState::Counting { current, total } if *current < *total => {
+                    let bytes = filled.len() as u64;
+                    prog.unbounded_send(Progress::Read { bytes }).ok();
+                    break;
+                }
+                StreamState::Counting { current, total } => {
+                    let excess = *current - *total;
+                    let bytes = filled.len() as u64 - excess;
+                    prog.unbounded_send(Progress::Read { bytes }).ok();
+
+                    let excess = filled[bytes as usize..].to_vec();
+                    self_.state = StreamState::Header { header: excess };
+                }
+                StreamState::Finished => {
+                    self_.progress = None;
+                    break;
+                }
+            }
+        }
+
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<R: Debug> Debug for PackStream<R> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct(stringify!(PackStream))
+            .field("inner", &self.inner)
+            .field("received_bytes", &self.received_bytes)
+            .field("num_objects", &self.num_objects)
+            .finish()
+    }
+}
+
+#[derive(PartialEq)]
+enum StreamState {
+    Start { magic: Vec<u8> },
+    Header { header: Vec<u8> },
+    Counting { current: u64, total: u64 },
+    Finished,
+}
+
+/// A discrete unit of progress reported while streaming a pack file.
+///
+/// This enum is created by [`PackStream::new()`]. See its documentation for more.
+#[derive(Clone, Debug)]
+pub enum Progress {
+    /// A new packfile entry has begun.
+    Begin {
+        /// The declared cryptographic hash of the contained object.
+        id: ObjectId,
+        /// Kind of the contained object.
+        kind: ObjectKind,
+        /// Total size, in bytes, of the contained object.
+        size: u64,
+    },
+    /// Several bytes were streamed from the packfile entry.
+    Read {
+        /// Number of bytes read.
+        bytes: u64,
+    },
+    /// The packfile footer was found and the I/O stream has ended.
+    Finished {
+        /// Total size of the packfile that was received.
+        received_bytes: u64,
+        /// Number of objects received.
+        num_objects: u64,
+    },
+}
+
+fn parse_header(header: [u8; HEADER_LEN]) -> anyhow::Result<(ObjectId, EntryKind, u64)> {
+    let object_id = header[..ObjectId::LENGTH]
+        .try_into()
+        .map(ObjectId::from_bytes)?;
+    let kind = EntryKind::try_from(header[ObjectId::LENGTH])?;
+    let size = header[ObjectId::LENGTH + 1..]
+        .try_into()
+        .map(u64::from_be_bytes)?;
+
+    Ok((object_id, kind, size))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -309,9 +524,10 @@ mod tests {
 
         let mut full_buffer = writer.finish().await.expect("failed to flush");
         full_buffer.seek(SeekFrom::Start(0)).await.unwrap();
+        let (reader, _) = PackStream::new(full_buffer);
 
         let mut blob_ids = Vec::new();
-        let reader = pack_reader(&mut full_buffer).enumerate();
+        let reader = pack_reader(reader).enumerate();
         pin_mut!(reader);
 
         while let Some((i, result)) = reader.next().await {
