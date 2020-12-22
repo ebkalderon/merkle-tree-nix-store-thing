@@ -3,10 +3,11 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
-use futures::try_join;
+use futures::{try_join, StreamExt};
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::pack::{PackStream, Progress};
 use crate::{Closure, ObjectId, ObjectKind};
 
 /// Copies `pkgs` and all their dependencies from `src` to `dest`.
@@ -17,21 +18,32 @@ use crate::{Closure, ObjectId, ObjectKind};
 /// If both `src` and `dst` are both remote hosts, the objects yielded by `src` will be routed
 /// through this host before being uploaded to `dst`. This is done for security reasons, where the
 /// credentials for both reside on the local machine. However, it can impose a performance penalty.
-pub async fn copy_closure<S, D>(
+pub async fn copy_closure<S, D, F>(
     src: &S,
     dst: &mut D,
     pkgs: BTreeSet<ObjectId>,
+    mut progress: F,
 ) -> anyhow::Result<Delta>
 where
     S: Source + ?Sized,
     D: Destination + ?Sized,
+    F: FnMut(&Progress),
 {
     let delta = src.find_missing(dst, pkgs)?;
 
-    let (mut reader, mut writer) = async_pipe()?;
+    let (reader, mut writer) = async_pipe()?;
+    let (mut reader, mut progress_rx) = PackStream::new(reader);
+
     let send = src.send_pack(delta.missing.clone(), &mut writer);
     let recv = dst.recv_pack(&mut reader);
-    try_join!(send, recv)?;
+    let progress = async move {
+        while let Some(p) = progress_rx.next().await {
+            progress(&p);
+        }
+        Ok(())
+    };
+
+    try_join!(send, recv, progress)?;
 
     Ok(delta)
 }
@@ -96,15 +108,6 @@ pub struct Delta {
     pub num_present: usize,
     /// Closure of objects known to be missing on the destination.
     pub missing: Closure,
-}
-
-/// A progress update for an ongoing copy operation.
-#[derive(Debug)]
-pub struct Progress {
-    /// The object ID being copied.
-    pub id: ObjectId,
-    /// Number of bytes copied so far.
-    pub bytes_copied: u64,
 }
 
 fn async_pipe() -> std::io::Result<(File, File)> {

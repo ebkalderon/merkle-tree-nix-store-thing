@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     let mut store2: LocalStore = LocalStore::init("./store2")?;
 
     println!("copying delta from store -> store2");
-    let info = foo::copy_closure(&store, &mut store2, pkgs).await?;
+    let info = foo::copy_closure(&store, &mut store2, pkgs, |p| println!("{:?}", p)).await?;
     println!("{:?}", info);
 
     Ok(())
