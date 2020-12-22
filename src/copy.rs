@@ -29,7 +29,7 @@ where
     D: Destination + ?Sized,
     F: FnMut(&Progress),
 {
-    let delta = src.find_missing(dst, pkgs)?;
+    let delta = src.find_missing(dst, pkgs).await?;
 
     let (reader, mut writer) = async_pipe()?;
     let (mut reader, mut progress_rx) = PackStream::new(reader);
@@ -56,7 +56,7 @@ pub trait Source {
     /// Returns `Err` if any of the given object IDs do not exist in this store, any of the object
     /// IDs do not refer to a `Package` object, a cycle or structural inconsistency is detected in
     /// the reference graph, or an I/O error occurred.
-    fn find_missing<D>(&self, dst: &D, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Delta>
+    async fn find_missing<D>(&self, dst: &D, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Delta>
     where
         D: Destination + ?Sized;
 

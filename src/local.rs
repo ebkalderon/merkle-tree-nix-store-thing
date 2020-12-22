@@ -89,7 +89,7 @@ impl<B: Backend> Store for LocalStore<B> {
 
 #[async_trait(?Send)]
 impl<B: Backend> Source for LocalStore<B> {
-    fn find_missing<D>(&self, dst: &D, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Delta>
+    async fn find_missing<D>(&self, dst: &D, pkgs: BTreeSet<ObjectId>) -> anyhow::Result<Delta>
     where
         D: Destination + ?Sized,
     {
