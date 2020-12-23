@@ -114,7 +114,7 @@ impl<B: Backend> Source for LocalStore<B> {
         })
     }
 
-    async fn send_pack<W>(&self, closure: Closure, writer: &mut W) -> anyhow::Result<()>
+    async fn send_pack<W>(&self, closure: &Closure, writer: &mut W) -> anyhow::Result<()>
     where
         W: AsyncWrite + Unpin,
     {

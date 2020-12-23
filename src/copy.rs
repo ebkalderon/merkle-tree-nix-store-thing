@@ -34,7 +34,7 @@ where
     let (reader, mut writer) = tokio::io::duplex(8 * 1024);
     let (mut reader, progress_rx) = PackStream::new(reader);
 
-    let send = src.send_pack(delta.missing.clone(), &mut writer);
+    let send = src.send_pack(&delta.missing, &mut writer);
     let recv = dst.recv_pack(&mut reader);
     let progress = progress_rx.for_each(|p| ready(progress(&p))).map(Ok);
 
@@ -63,7 +63,7 @@ pub trait Source {
     ///
     /// Returns `Err` if any of the object IDs do not actually exist in this store, or an I/O error
     /// occurred.
-    async fn send_pack<W>(&self, closure: Closure, writer: &mut W) -> anyhow::Result<()>
+    async fn send_pack<W>(&self, closure: &Closure, writer: &mut W) -> anyhow::Result<()>
     where
         W: AsyncWrite + Unpin;
 }
