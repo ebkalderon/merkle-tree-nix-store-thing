@@ -5,7 +5,6 @@ use std::future::ready;
 
 use async_trait::async_trait;
 use futures::{try_join, FutureExt, StreamExt};
-use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::pack::{PackStream, Progress};
@@ -32,7 +31,7 @@ where
 {
     let delta = src.find_missing(dst, pkgs).await?;
 
-    let (reader, mut writer) = async_pipe()?;
+    let (reader, mut writer) = tokio::io::duplex(8 * 1024);
     let (mut reader, progress_rx) = PackStream::new(reader);
 
     let send = src.send_pack(delta.missing.clone(), &mut writer);
@@ -104,14 +103,4 @@ pub struct Delta {
     pub num_present: usize,
     /// Closure of objects known to be missing on the destination.
     pub missing: Closure,
-}
-
-fn async_pipe() -> std::io::Result<(File, File)> {
-    use std::os::unix::io::{FromRawFd, IntoRawFd};
-
-    let (reader, writer) = os_pipe::pipe()?;
-    let reader = unsafe { File::from_raw_fd(reader.into_raw_fd()) };
-    let writer = unsafe { File::from_raw_fd(writer.into_raw_fd()) };
-
-    Ok((reader, writer))
 }

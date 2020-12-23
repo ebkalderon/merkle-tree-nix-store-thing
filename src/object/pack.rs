@@ -315,16 +315,18 @@ impl<R: AsyncRead + Unpin> AsyncRead for PackStream<R> {
         }
 
         let self_ = &mut *self;
+        let old_len = buf.filled().len();
         ready!(Pin::new(&mut self_.inner).poll_read(cx, buf))?;
+        let len = buf.filled().len() - old_len;
 
         let filled = buf.filled();
-        self_.received_bytes += filled.len() as u64;
+        self_.received_bytes += len as u64;
         let prog = self_.progress.as_mut().unwrap();
 
         match &mut self_.state {
-            StreamState::Start { magic } => magic.extend_from_slice(filled),
-            StreamState::Header { header } => header.extend_from_slice(filled),
-            StreamState::Counting { current, .. } => *current += filled.len() as u64,
+            StreamState::Start { magic } => magic.extend_from_slice(&filled[old_len..]),
+            StreamState::Header { header } => header.extend_from_slice(&filled[old_len..]),
+            StreamState::Counting { current, .. } => *current += len as u64,
             StreamState::Finished => unreachable!(),
         }
 
@@ -377,16 +379,17 @@ impl<R: AsyncRead + Unpin> AsyncRead for PackStream<R> {
                     }
                 }
                 StreamState::Counting { current, total } if *current < *total => {
-                    let bytes = filled.len() as u64;
+                    let bytes = len as u64;
                     prog.unbounded_send(Progress::Read { bytes }).ok();
                     break;
                 }
                 StreamState::Counting { current, total } => {
                     let excess = *current - *total;
-                    let bytes = filled.len() as u64 - excess;
+                    let bytes = len as u64;
                     prog.unbounded_send(Progress::Read { bytes }).ok();
 
-                    let excess = filled[bytes as usize..].to_vec();
+                    let index = filled.len() as u64 - excess;
+                    let excess = filled[index as usize..].to_vec();
                     self_.state = StreamState::Header { header: excess };
                 }
                 StreamState::Finished => {
