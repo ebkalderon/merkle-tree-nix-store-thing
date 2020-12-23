@@ -1,9 +1,10 @@
 //! Functions for copying packages between stores.
 
 use std::collections::BTreeSet;
+use std::future::ready;
 
 use async_trait::async_trait;
-use futures::{try_join, StreamExt};
+use futures::{try_join, FutureExt, StreamExt};
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -32,16 +33,11 @@ where
     let delta = src.find_missing(dst, pkgs).await?;
 
     let (reader, mut writer) = async_pipe()?;
-    let (mut reader, mut progress_rx) = PackStream::new(reader);
+    let (mut reader, progress_rx) = PackStream::new(reader);
 
     let send = src.send_pack(delta.missing.clone(), &mut writer);
     let recv = dst.recv_pack(&mut reader);
-    let progress = async move {
-        while let Some(p) = progress_rx.next().await {
-            progress(&p);
-        }
-        Ok(())
-    };
+    let progress = progress_rx.for_each(|p| ready(progress(&p))).map(Ok);
 
     try_join!(send, recv, progress)?;
 
