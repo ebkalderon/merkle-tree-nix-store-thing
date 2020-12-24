@@ -366,7 +366,6 @@ impl<R: AsyncRead + Unpin> AsyncRead for PackStream<R> {
 
                     let kind = kind.into();
                     prog.unbounded_send(Progress::Begin { id, kind, size }).ok();
-                    prog.unbounded_send(Progress::Read { bytes: 0 }).ok();
 
                     let excess = (header.len() - HEADER_LEN) as u64;
                     self_.state = StreamState::Counting {
