@@ -8,6 +8,7 @@ edition = "2018"
 anyhow = "1.0.32"
 async-trait = "0.1.42"
 blake3 = { version = "0.3.6", features = ["rayon"] }
+bytes = "1.0.0"
 cached = { version = "0.22.0", default-features = false }
 filetime = "0.2.12"
 fnv = "1.0"
@@ -26,6 +27,7 @@ serde_json = "1.0.58"
 smol_str = { version = "0.1.17", features = ["serde"] }
 tempfile = "3.1.0"
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "rt"] }
+tokio-util = { version = "0.6.0", features = ["io"] }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }

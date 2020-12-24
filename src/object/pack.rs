@@ -37,16 +37,18 @@
 
 use std::convert::{TryFrom, TryInto};
 use std::fmt::{self, Debug, Formatter};
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use anyhow::anyhow;
+use bytes::Bytes;
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use futures::{ready, stream, Stream};
+use futures::{ready, stream, Stream, StreamExt};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio_util::io::ReaderStream;
 
 use super::{Blob, ContentAddressable, Object, ObjectId, ObjectKind};
 use crate::util;
@@ -214,18 +216,23 @@ where
         let (object_id, kind, size) = parse_header(header)?;
         let object = match kind {
             EntryKind::Blob | EntryKind::Exec => {
-                let (mut sync_reader, writer) = os_pipe::pipe()?;
-                let mut writer = unsafe { tokio::fs::File::from_raw_fd(writer.into_raw_fd()) };
+                let (tx, mut rx) = tokio::sync::mpsc::channel(8);
 
                 let handle = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-                    let mut sync_writer = Blob::from_writer(kind == EntryKind::Exec);
-                    util::copy_wide(&mut sync_reader, &mut sync_writer)?;
-                    let (blob, _) = sync_writer.finish();
+                    let mut writer = Blob::from_writer(kind == EntryKind::Exec);
+
+                    while let Some(result) = rx.blocking_recv() {
+                        let bytes: Bytes = result?;
+                        writer.write_all(&bytes)?;
+                    }
+
+                    let (blob, _) = writer.finish();
                     Ok(blob)
                 });
 
-                tokio::io::copy(&mut reader.take(size), &mut writer).await?;
-                drop(writer);
+                ReaderStream::new(reader.take(size))
+                    .fold(tx, |tx, r| async { tx.send(r).await.map(|_| tx).unwrap() })
+                    .await;
 
                 let blob = handle.await.unwrap()?;
                 Object::Blob(blob)
@@ -465,7 +472,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::SeekFrom;
 
-    use futures::{pin_mut, StreamExt};
+    use futures::pin_mut;
     use tokio::io::AsyncSeekExt;
 
     use super::*;
